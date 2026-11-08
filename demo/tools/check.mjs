@@ -4,7 +4,8 @@
 //  2. every topic hash and selector in core.js matches `cast keccak` / `cast sig` (skipped if cast is missing);
 //  3. the ABI decoders read what `cast abi-encode` writes;
 //  4. demo/fixture.json replays into the expected timeline: one trip from Base, three sweeps, nothing left hot, and a
-//     later approval merged into that trip; every verdict links to its origin log by (chain, tx, log index).
+//     later approval merged into that trip; every verdict links to its origin log by (chain, tx, log index);
+//  5. tools/measure.mjs: percentiles, CSV quoting and the latency table, on that fixture trip.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -108,6 +109,17 @@ if (cast) {
 eq(C.formatUnits(975000000n, 6), "975", "formatUnits 6");
 eq(C.formatUnits(1234567890000000000000n, 18), "1,234.5678", "formatUnits 18");
 eq(C.formatUnits((1n << 256n) - 1n, 18), "unlimited", "formatUnits max");
+eq(C.formatUnits(1n, 6), "<0.0001", "formatUnits dust is not shown as 0");
+eq(C.formatUnits(0n, 6), "0", "formatUnits zero");
+eq(C.formatUnits(20_500_000n, 6), "20.5", "formatUnits 6-decimal USDC");
+{
+  // Amounts are formatted with each token's own decimals: a real 6-decimal USDC next to an 18-decimal test token.
+  const usdc = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
+  const teth = "0x1111111111111111111111111111111111111111";
+  const dctx = C.makeContext({ chains: { 84532: { tokens: [{ address: usdc, symbol: "USDC", decimals: 6 }, { address: teth, symbol: "tETH", decimals: 18 }] } } });
+  eq(C.amountStr(dctx, 84532, usdc, 14_000_000n), "14 USDC", "amountStr USDC (6 decimals)");
+  eq(C.amountStr(dctx, 84532, teth, 14n * 10n ** 18n), "14 tETH", "amountStr tETH (18 decimals)");
+}
 
 // 4. fixture replay ----------------------------------------------------------------------------------------------
 const fx = JSON.parse(readFileSync(join(demo, "fixture.json"), "utf8"));
@@ -167,6 +179,30 @@ for (const toks of Object.values(bal)) for (const b of Object.values(toks)) hotL
 eq(hotLeft, 0n, "nothing left in the hot wallet");
 const baseUsd = fx.config.chains["84532"].tokens.find((x) => x.symbol === "tUSD").address.toLowerCase();
 eq(bal["84532"][baseUsd].cold, 975_000_000n, "Base tUSD in vault (1000 minus the 25 paid)");
+
+// 5. tools/measure.mjs: statistics, CSV and the table, on the fixture ----------------------------------------------
+const M = await import(join(repo, "tools", "measure.mjs"));
+eq(M.percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0.5), 5.5, "median (even count)");
+ok(Math.abs(M.percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0.9) - 9.1) < 1e-9, "p90 interpolates");
+eq(M.percentile([7], 0.9), 7, "p90 of one run");
+eq(M.toRaw("1.5", 6), 1_500_000n, "toRaw 6 decimals");
+eq(M.toRaw("2", 18), 2n * 10n ** 18n, "toRaw 18 decimals");
+eq(JSON.stringify(M.parseCsv('a,"b,c",d\n1,"say ""hi""",3\n')), JSON.stringify([["a", "b,c", "d"], ["1", 'say "hi"', "3"]]), "CSV quoting");
+{
+  const rows = t.requests.length ? M.rowsFromTrip(t, { runId: "r1", utc: "2026-11-08T00:00:00Z", source: "fixture" }) : [];
+  eq(rows.length, 3, "one CSV row per destination chain");
+  ok(rows.every((r) => r.status === "ok" && r.sweep_tx && r.sweep_block !== "" && r.reactive_tx), "rows carry tx hashes and blocks");
+  const S = M.summarize(rows);
+  eq(S.ok.length, 1, "summarize: one complete run");
+  const e2e = S.groups.get(84532).get("e2e").samples[0];
+  eq(e2e, t.latency.allSwept, "end to end equals the page's 'all swept' latency");
+  const failedRun = rows.map((r, i) => ({ ...r, run_id: "r2", status: i === 2 ? "timeout" : "ok" }));
+  const S2 = M.summarize([...rows, ...failedRun]);
+  eq(S2.failed.length, 1, "a run with one missing sweep is left out");
+  const { text } = M.renderTable(rows, { 84532: { name: "Base Sepolia" }, 11155111: { name: "Ethereum Sepolia" }, 1301: { name: "Unichain Sepolia" } }, { simulated: true });
+  ok(/\*\*Simulated, not measured\.\*\*/.test(text), "fixture table is labelled simulated");
+  ok(text.includes("| Base Sepolia | **origin block → last sweep block (end to end)** | 1 | ≈6.00 s |"), "end-to-end row");
+}
 
 console.log(`${passed} checks passed${failed ? `, ${failed} FAILED` : ""}`);
 process.exit(failed ? 1 : 0);

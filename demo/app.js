@@ -188,16 +188,20 @@
         return render();
       }
     }
-    // token symbols and decimals
+    // Token symbols and decimals, read from each token (USDC has 6, the demo tokens 6 or 18). The two reads are
+    // independent, so a token without symbol() still gets its decimals; a config value is kept if a read fails.
+    for (const c of Object.values(chains)) c.tokens = (c.tokens || []).map((t) => (typeof t === "string" ? { address: t } : t));
     await Promise.all(
       Object.entries(chains).flatMap(([id, c]) =>
         c.tokens.map(async (t) => {
-          try {
-            t.symbol = C.decodeString(await call(Number(id), t.address, C.SELECTOR.symbol)) || C.short(t.address);
-            t.decimals = Number(C.toBig(await call(Number(id), t.address, C.SELECTOR.decimals)));
-          } catch {
-            t.symbol ??= C.short(t.address);
+          const [sym, dec] = await Promise.allSettled([call(Number(id), t.address, C.SELECTOR.symbol), call(Number(id), t.address, C.SELECTOR.decimals)]);
+          const symbol = sym.status === "fulfilled" ? C.decodeString(sym.value) : "";
+          const decimals = dec.status === "fulfilled" && dec.value && dec.value !== "0x" ? Number(C.toBig(dec.value)) : null;
+          t.symbol = symbol || t.symbol || C.short(t.address);
+          if (decimals != null && decimals <= 77) t.decimals = decimals;
+          else {
             t.decimals ??= 18;
+            console.warn(`decimals() unreadable for ${t.address} on ${id}; showing amounts with ${t.decimals} decimals`);
           }
         }),
       ),

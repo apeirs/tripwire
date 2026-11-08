@@ -135,3 +135,64 @@ contract ReentrantERC20 is MockERC20 {
         return true;
     }
 }
+
+/// @notice Circle FiatToken (USDC) behaviour that matters to a sweep: 6 decimals, an allowance is always spent down
+///         (max included, and without a fresh Approval event), and transfers revert while paused or when either side
+///         is blacklisted. Open mint for tests. test/fork/UsdcFork.t.sol runs the real testnet bytecode.
+contract FiatTokenLike {
+    string public constant name = "USDC";
+    string public constant symbol = "USDC";
+    uint8 public constant decimals = 6;
+    uint256 public totalSupply;
+    bool public paused;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public isBlacklisted;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    function mint(address to_, uint256 amount_) external {
+        totalSupply += amount_;
+        balanceOf[to_] += amount_;
+        emit Transfer(address(0), to_, amount_);
+    }
+
+    function setPaused(bool p_) external {
+        paused = p_;
+    }
+
+    function blacklist(address who_, bool on_) external {
+        isBlacklisted[who_] = on_;
+    }
+
+    function approve(address spender_, uint256 amount_) external returns (bool) {
+        require(!paused && !isBlacklisted[msg.sender] && !isBlacklisted[spender_], "FiatToken: blocked");
+        allowance[msg.sender][spender_] = amount_;
+        emit Approval(msg.sender, spender_, amount_);
+        return true;
+    }
+
+    function transfer(address to_, uint256 amount_) external returns (bool) {
+        _move(msg.sender, to_, amount_);
+        return true;
+    }
+
+    function transferFrom(address from_, address to_, uint256 amount_) external returns (bool) {
+        require(!isBlacklisted[msg.sender], "FiatToken: blocked");
+        require(amount_ <= allowance[from_][msg.sender], "ERC20: transfer amount exceeds allowance");
+        allowance[from_][msg.sender] -= amount_;
+        _move(from_, to_, amount_);
+        return true;
+    }
+
+    function _move(address from_, address to_, uint256 amount_) internal {
+        require(!paused, "Pausable: paused");
+        require(!isBlacklisted[from_] && !isBlacklisted[to_], "Blacklistable: account is blacklisted");
+        require(amount_ <= balanceOf[from_], "ERC20: transfer amount exceeds balance");
+        balanceOf[from_] -= amount_;
+        balanceOf[to_] += amount_;
+        emit Transfer(from_, to_, amount_);
+    }
+}

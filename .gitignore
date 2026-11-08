@@ -3,3 +3,6 @@ cache/
 broadcast/
 .env
 *.env
+
+# local demo config written by tools/localnet/run.sh HOLD=1
+demo/*.local.json

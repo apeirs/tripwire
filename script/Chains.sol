@@ -31,6 +31,16 @@ library Chains {
         if (chainId_ == UNICHAIN) return 0x754120EC7a6eF81E4c5c835AA603C63Da64693E6;
         revert UnsupportedChain(chainId_);
     }
+
+    /// @notice Circle's testnet USDC (FiatToken v2, 6 decimals) on a protected chain, or address(0) where there is
+    ///         none. Addresses from developers.circle.com/stablecoins/usdc-contract-addresses ("Testnet"), read and
+    ///         checked on-chain (symbol USDC, 6 decimals) 2026-11-08. Free test USDC: faucet.circle.com.
+    function usdc(uint256 chainId_) internal pure returns (address) {
+        if (chainId_ == BASE_SEPOLIA) return 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
+        if (chainId_ == ETH_SEPOLIA) return 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
+        if (chainId_ == UNICHAIN_SEPOLIA) return 0x31d0220469e10c4E71834a79b1f276d740d3768F;
+        return address(0);
+    }
 }
 
 /// @notice `depositTo()` exists on both the system contract and the callback proxies.

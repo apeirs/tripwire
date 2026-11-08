@@ -62,6 +62,10 @@
     decimals: "0x313ce567", // decimals()
     symbol: "0x95d89b41", // symbol()
     debt: "0x9b6c56ec", // debt(address)
+    tripCooldown: "0xfd7375f9", // tripCooldown() (tools/measure.mjs)
+    threshold: "0xd60dd2ca", // threshold(uint256,address)
+    trusted: "0x6e9821c2", // trusted(address)
+    mint: "0x40c10f19", // mint(address,uint256): open on the demo tokens, restricted on real ones
   };
   const SELECTOR_SIGNATURES = {
     HOT: "HOT()",
@@ -75,6 +79,10 @@
     decimals: "decimals()",
     symbol: "symbol()",
     debt: "debt(address)",
+    tripCooldown: "tripCooldown()",
+    threshold: "threshold(uint256,address)",
+    trusted: "trusted(address)",
+    mint: "mint(address,uint256)",
   };
 
   // Enum orders from the contracts.
@@ -148,6 +156,8 @@
     const base = 10n ** BigInt(decimals);
     const whole = abs / base;
     let frac = (abs % base).toString().padStart(decimals, "0").slice(0, maxFrac).replace(/0+$/, "");
+    // Dust below the shown precision (1 micro-USDC at 4 places) reads "<0.0001", never a misleading "0".
+    if (abs > 0n && whole === 0n && !frac) return (neg ? "-" : "") + "<0." + "0".repeat(Math.max(0, maxFrac - 1)) + "1";
     const w = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
     return (neg ? "-" : "") + w + (frac ? "." + frac : "");
   }
@@ -393,7 +403,7 @@
         } else if (["Swept", "Skipped", "SweepDone", "Replayed"].includes(ev.name)) {
           const chainId = ctx.guardianChain[ev.address] ?? ev.chainId;
           if (ctx.guardianChain[ev.address] == null && Object.keys(ctx.guardianChain).length) continue; // not our Guardian
-          const s = (tripOf(ev.tripId).sweeps[chainId] ??= { chainId, txHash: ev.txHash, ts: ev.ts, tsExact: ev.tsExact, swept: [], skipped: [], done: null, replayed: false });
+          const s = (tripOf(ev.tripId).sweeps[chainId] ??= { chainId, txHash: ev.txHash, blockNumber: ev.blockNumber, ts: ev.ts, tsExact: ev.tsExact, swept: [], skipped: [], done: null, replayed: false });
           if (s.ts == null) s.ts = ev.ts;
           if (ev.name === "Swept") s.swept.push({ token: ev.token, amount: ev.amount });
           if (ev.name === "Skipped") s.skipped.push({ token: ev.token, reason: ev.reason });

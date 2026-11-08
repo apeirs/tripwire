@@ -2,7 +2,8 @@
 
 **One stolen key shouldn't cost you every chain.**
 
-Tripwire guards a hot wallet's ERC-20s on Base, Ethereum and Unichain (Sepolia for now). When an outgoing transfer
+Tripwire guards a hot wallet's ERC-20s on Base, Ethereum and Unichain (Sepolia for now; real Circle test USDC as well
+as demo tokens). When an outgoing transfer
 or approval leaves the wallet that isn't to a trusted address, isn't under your threshold and wasn't pre-cleared,
 a reactive contract on Reactive Network trips and asks a Guardian on **each of the three chains** to move every
 approved token to your cold address. A Guardian can pay exactly one address, yours, and only on a callback from
@@ -96,7 +97,8 @@ settles by itself. That path is tested, including tokens that emit a fresh `Appr
 
 ## Safety properties (and the tests that hold them)
 
-`forge test`: **64 tests** (46 unit and scenario, 12 fuzz at 512 runs each, 6 invariants at 128 runs × 64 calls).
+`forge test`: **69 tests** (51 unit and scenario, 12 fuzz at 512 runs each, 6 invariants at 128 runs × 64 calls), plus
+3 fork tests that run Circle's real USDC on forks of the three chains when asked for (below).
 
 - **Only COLD ever receives.** `COLD` is immutable and is the only recipient in the code. Fuzzed over random
   hot/cold/amounts (`testFuzz_onlyColdEverReceives`) and held as an invariant across random drains, approvals,
@@ -121,6 +123,12 @@ settles by itself. That path is tested, including tokens that emit a fresh `Appr
   window (`invariant_tripsRespectWindow`).
 - **Hostile tokens can't block a sweep**: no-return (USDT-style), false-return, reverting, gas-burning and
   return-bomb tokens, re-entrancy (`test_weirdTokens_skippedOthersStillSwept`, `test_reentrancy_cannotSweepAgain`).
+- **Real assets, at their own precision.** A USDC-like token (6 decimals, allowance spent down even when it is max,
+  pause and blacklist) is guarded next to 18-decimal tokens through the whole loop: thresholds are raw units (5 USDC =
+  `5000000`, one micro-USDC over trips), everything left is swept to the unit, the Guardian stays armed after the
+  spend-down, and a paused token or a blacklisted vault is skipped while the rest moves (`test/Usdc.t.sol`). Circle's
+  real FiatToken bytecode on forks of Base, Ethereum and Unichain Sepolia: minted the way Circle mints, swept to COLD
+  through the proxy, 62.7k gas (`FORK_TESTS=1 BASE_RPC=… ETH_RPC=… UNI_RPC=… forge test --mc UsdcForkTest -vv`, read-only).
 - **A sweep never runs out of gas and undoes itself.** Each token call is capped at 100k gas and a token is only
   attempted with 330k left, so a short gas limit skips the tail instead of reverting what already moved
   (`test_lowGas_skipsTailButNeverRevertsMovedTokens`).
@@ -140,6 +148,7 @@ scenarios end to end; `test/DemoTrace.t.sol` runs the demo story and prints its 
 | `react()` that clears (e.g. HOT → COLD) | ~29k | ≈ 0.013 lREACT |
 | `react()` that merges into the last trip | ~34k | ≈ 0.013 lREACT, no callbacks |
 | Deploy `TripwireReactive` | ≈4.25M in tests (incl. 9 subscriptions to a mock) | ≈ 0.43 lREACT at 100 gwei |
+| `Guardian.sweep` of Circle's real USDC (fork test) | 62.7k | same budget |
 | Deploy `Guardian` / `Intent` / `PanicButton` | ≈763k / 214k / 85k | fractions of a cent on L2 Sepolias |
 
 Worst case under abuse: a thief holding the hot key can make it fire at most once per window (default 5 minutes),
@@ -227,12 +236,15 @@ for RPC in $BASE_RPC $ETH_RPC $UNI_RPC; do
 done
 export G_BASE=0x... G_ETH=0x... G_UNI=0x...
 
-# 4. Lasna, once per chain: its Guardian + tokens (+ optional THRESHOLDS, TRUSTED)
+# 4. Lasna, once per chain: its Guardian + tokens (+ optional THRESHOLDS, TRUSTED). USDC=true adds Circle's test
+#    USDC on that chain (script/Chains.sol); USDC_THRESHOLD is in raw units, 6 decimals (1000000 = 1 USDC)
+export USDC=true USDC_THRESHOLD=1000000
 CHAIN_ID=84532    GUARDIAN=$G_BASE forge script script/Configure.s.sol --rpc-url $LASNA_RPC --broadcast
 CHAIN_ID=11155111 GUARDIAN=$G_ETH  forge script script/Configure.s.sol --rpc-url $LASNA_RPC --broadcast
 CHAIN_ID=1301     GUARDIAN=$G_UNI  forge script script/Configure.s.sol --rpc-url $LASNA_RPC --broadcast
 
-# 5. each chain, signed by HOT: approve that chain's Guardian (max) for every token
+# 5. each chain, signed by HOT: approve that chain's Guardian (max) for every token (same USDC=true as step 4;
+#    it prints each token's symbol and decimals and stops on an address without code)
 export HOT_PK=...
 GUARDIAN=$G_BASE forge script script/Arm.s.sol --rpc-url $BASE_RPC --broadcast
 GUARDIAN=$G_ETH  forge script script/Arm.s.sol --rpc-url $ETH_RPC  --broadcast
@@ -249,6 +261,23 @@ cast send $INTENT "intendFor(address,address,uint256,uint64)" $TOKEN $TO $AMOUNT
 cast send $PANIC "panic()" --rpc-url $RPC --private-key $COSIGNER_PK
 MODE=deploy|phish|pull|sweep forge script script/Drainer.s.sol:DrainerScript --rpc-url $RPC --broadcast
 ```
+
+### A real asset: Circle's test USDC
+
+The token list is per chain: `TOKENS` (comma list, the demo tokens) plus, with `USDC=true`, Circle's testnet USDC on
+that chain, from `script/Chains.sol`:
+
+| Chain | USDC (FiatToken v2, 6 decimals) |
+|---|---|
+| Base Sepolia | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
+| Ethereum Sepolia | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` |
+| Unichain Sepolia | `0x31d0220469e10c4E71834a79b1f276d740d3768F` |
+
+Addresses from [Circle's list](https://developers.circle.com/stablecoins/usdc-contract-addresses) ("Testnet"),
+checked on-chain 2026-11-08. To fund HOT: [faucet.circle.com](https://faucet.circle.com), pick USDC and the network,
+paste HOT's address. No account or sign-up (a reCAPTCHA only); 20 USDC per request, one request per address, network
+and token every 2 hours. Nothing in the contracts depends on decimals: the Guardian moves raw amounts, thresholds are
+raw units, and the demo page and `tools/measure.mjs` read `decimals()` and `symbol()` from each token.
 
 ## Watching it: the demo page
 
@@ -300,9 +329,31 @@ node demo/tools/check.mjs   # signatures vs src/, topics and selectors vs cast, 
 
 ## Latency (origin block → sweep included)
 
-| Scenario | Runs | Origin → Reactive p50 | Origin → last sweep p50 | p95 | Notes |
-|---|---|---|---|---|---|
-| _tbd_ | | | | | block timestamps; Base Sepolia in ms, others in whole seconds |
+<!-- measure:latency:begin (generated by tools/measure.mjs from docs/latency.csv; edits here are overwritten) -->
+_Not measured yet: filled in by `node tools/measure.mjs` after the testnet deploy (see "Measuring it" below)._
+<!-- measure:latency:end -->
+
+### Measuring it
+
+`tools/measure.mjs` (node, no dependencies; forge and cast on PATH) runs N trips end to end on the deployment and
+writes the table above and [`docs/latency.csv`](docs/latency.csv) (one row per run and destination chain, with every
+transaction hash). Per run it tops HOT up on the demo tokens, sends one untrusted move from HOT through
+`script/Measure.s.sol` (keys from the environment, as in every script), then polls the origin chain, Lasna and each
+Guardian for `Observed`/`Tripped` and `SweepDone`, with block timestamps and wall-clock times. It sets `tripCooldown`
+to 0 for the session so the runs don't merge, and restores it afterwards, on errors, timeouts and Ctrl-C too.
+
+```bash
+node tools/measure.mjs --dry-run                       # the plan and what is missing; sends nothing
+export PRIVATE_KEY=... HOT_PK=...                      # owner (cooldown, mints) and HOT (the move)
+node tools/measure.mjs --runs 10 --origin all          # rotate the origin chain; --scenario approval|panic
+node tools/measure.mjs --runs 3 --token USDC --amount 2 --refill   # trip on real USDC; COLD_PK sends it back each run
+node tools/measure.mjs --fixture                       # the table code on demo/fixture.json (simulated), prints only
+```
+
+`tools/localnet/run.sh` runs all of it with no testnet transaction: anvil chains for Base Sepolia (forked, so Circle's
+USDC is the real bytecode) and Unichain Sepolia, a third anvil as Lasna with the mock system contract, and
+`tools/localnet/relay.mjs` standing in for Reactive Network. It deploys with the scripts above, measures, and checks
+the CSV, the table, the USDC sweep and the cooldown restore after a timeout and after Ctrl-C.
 
 ## Notes on the Omni API
 
