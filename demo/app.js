@@ -403,7 +403,7 @@
         <div><span class="k">Vault (COLD)</span>${addrLink(S.chainIds[0], ctx.cold)}</div>
         <div><span class="k">Cosigner</span>${addrLink(S.chainIds[0], ctx.cosigner)}</div>
         <div><span class="k">TripwireReactive</span>${chip(L)} ${addrLink(L, ctx.tripwire)}
-          ${h.balance != null ? `<span class="muted small">${esc(C.formatUnits(h.balance, 18, 3))} lREACT${h.debt ? `, <span class="bad-t">debt ${esc(C.formatUnits(h.debt, 18, 4))}</span>` : ""}</span>` : ""}
+          ${h.balance != null ? `<span class="muted small">${esc(C.formatUnits(h.balance, 18, 3))} ${S.ctx.lasnaChainId === 1597 ? "REACT" : "lREACT"}${h.debt ? `, <span class="bad-t">debt ${esc(C.formatUnits(h.debt, 18, 4))}</span>` : ""}</span>` : ""}
           ${statusDot(L)}</div>
       </div>
       <table class="tbl"><thead><tr><th>Chain</th><th>Guardian</th><th>Tokens</th><th>Callback debt</th><th>RPC</th></tr></thead><tbody>${rows}</tbody></table>
