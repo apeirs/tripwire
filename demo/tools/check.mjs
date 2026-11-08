@@ -3,7 +3,8 @@
 //  1. every event signature in core.js matches the declaration in src/*.sol (enums count as uint8);
 //  2. every topic hash and selector in core.js matches `cast keccak` / `cast sig` (skipped if cast is missing);
 //  3. the ABI decoders read what `cast abi-encode` writes;
-//  4. demo/fixture.json replays into the expected timeline: one trip from Base, three sweeps, nothing left hot.
+//  4. demo/fixture.json replays into the expected timeline: one trip from Base, three sweeps, nothing left hot, and a
+//     later approval merged into that trip; every verdict links to its origin log by (chain, tx, log index).
 
 import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -80,6 +81,29 @@ if (cast) {
     run("calldata", "allowance(address,address)", "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222"),
     "encodeCall",
   );
+  const lctx = C.makeContext({ lasnaChainId: 5318007 });
+  const obs = C.decodeLog(lctx, {
+    chainId: 5318007,
+    address: "0x0000000000000000000000000000000000000001",
+    topics: [C.TOPIC.Observed, C.numTopic(84532), C.TOPIC.Approval, C.addrTopic("0x3333333333333333333333333333333333333333")],
+    data: run("abi-encode", "f(uint256,uint8,uint256,uint256)", "5", "4", "0xabc", "7"),
+    transactionHash: "0x01",
+    logIndex: 0,
+    blockNumber: 1,
+  });
+  eq(obs.verdict, "Merged", "Observed.verdict");
+  eq(obs.originTx, "0x" + "abc".padStart(64, "0"), "Observed.originTx");
+  eq(obs.originLogIndex, 7, "Observed.originLogIndex");
+  const done = C.decodeLog(lctx, {
+    chainId: 84532,
+    address: "0x0000000000000000000000000000000000000002",
+    topics: [C.TOPIC.SweepDone, C.numTopic(1)],
+    data: run("abi-encode", "f(uint256,uint256,uint256)", "1", "31", "8"),
+    transactionHash: "0x02",
+    logIndex: 0,
+    blockNumber: 1,
+  });
+  eq([done.swept, done.skipped, done.unhandled].join(","), "1,31,8", "SweepDone counts");
 }
 eq(C.formatUnits(975000000n, 6), "975", "formatUnits 6");
 eq(C.formatUnits(1234567890000000000000n, 18), "1,234.5678", "formatUnits 18");
@@ -114,8 +138,16 @@ eq(t.requests.length, 3, "sweep requests");
 eq(Object.keys(t.sweeps).length, 3, "sweeps landed");
 for (const s of Object.values(t.sweeps)) {
   eq(s.swept.length, 3, `tokens swept on ${s.chainId}`);
-  ok(s.done && s.done.swept === 3 && s.done.skipped === 0, `SweepDone on ${s.chainId}`);
+  ok(s.done && s.done.swept === 3 && s.done.skipped === 0 && s.done.unhandled === 0, `SweepDone on ${s.chainId}`);
 }
+eq(t.merged.length, 1, "later approval merged into trip #1");
+eq(t.merged[0].reason, "Approval", "merged reason");
+ok(!!t.merged[0].origin && t.merged[0].origin.name === "Approval" && t.merged[0].origin.txHash !== t.originRef.txHash, "merged move linked to its own origin tx");
+eq(v.events.filter((e) => e.name === "SweepRequested").length, 3, "the merged approval requested no sweep");
+
+const fixtureLog = new Set(fx.logs.map((l) => `${l.chainId}:${l.transactionHash.toLowerCase()}:${l.logIndex}`));
+const observed = v.events.filter((e) => e.name === "Observed");
+ok(observed.length > 0 && observed.every((e) => fixtureLog.has(`${e.originChainId}:${e.originTx}:${e.originLogIndex}`)), "every Observed names a fixture origin log");
 eq(t.status, "swept", "trip status");
 ok(t.latency.toReactive > 0 && t.latency.allSwept > t.latency.toReactive, "latencies ordered");
 eq(t.latency.sweeps[84532].approx, false, "Base origin to Base sweep uses millisecond timestamps");
@@ -125,6 +157,7 @@ const verdicts = v.feed.filter((r) => r.verdict).map((r) => r.verdict);
 ok(verdicts.includes("cleared: pre-cleared by an intent"), "payment cleared by intent");
 ok(verdicts.includes("intent stored on Reactive"), "intent stored");
 ok(verdicts.includes("TRIPPED"), "approval tripped");
+ok(verdicts.includes("merged into trip #1: no new sweep"), "second approval shown as merged");
 ok(!v.feed.some((r) => /sent from HOT to VAULT/.test(r.text)), "sweep transfers are folded into the sweep rows");
 eq(v.feed.filter((r) => r.kind === "sweep").length, 3, "three sweep rows");
 

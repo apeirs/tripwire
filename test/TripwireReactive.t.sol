@@ -17,6 +17,22 @@ contract TripwireReactiveTest is Fixture {
         uint256 txHash,
         uint256 logIndex
     );
+    event TripMerged(
+        uint256 indexed tripId,
+        TripwireReactive.Reason indexed reason,
+        uint256 indexed chainId,
+        uint256 txHash,
+        uint256 logIndex
+    );
+    event Observed(
+        uint256 indexed chainId,
+        uint256 indexed topic0,
+        address indexed counterparty,
+        uint256 amount,
+        TripwireReactive.Verdict verdict,
+        uint256 txHash,
+        uint256 logIndex
+    );
 
     // ------------------------------------------------------------ construction and config
 
@@ -196,12 +212,16 @@ contract TripwireReactiveTest is Fixture {
         assertEq(tw.trips(), 1);
 
         _intend(ETH, cosigner, 0, shop, 5e18, 1 hours);
+        _waitOutWindow();
         _hotTransfer(UNI, 0, shop, 5e18); // other chain
         assertEq(tw.trips(), 2);
+        _waitOutWindow();
         _hotTransfer(ETH, 1, shop, 5e18); // other token
         assertEq(tw.trips(), 3);
+        _waitOutWindow();
         _hotTransfer(ETH, 0, attacker, 5e18); // other recipient
         assertEq(tw.trips(), 4);
+        _waitOutWindow();
         _hotTransfer(ETH, 0, shop, 5e18); // the intended one
         assertEq(tw.trips(), 4);
     }
@@ -240,8 +260,10 @@ contract TripwireReactiveTest is Fixture {
         _hotApprove(BASE, 0, address(chains[BASE].guardian), type(uint256).max);
         assertEq(tw.trips(), 1);
 
+        _waitOutWindow();
         _hotApprove(BASE, 0, address(chains[BASE].guardian), 0);
         assertEq(tw.trips(), 2, "guardian revoke trips");
+        _waitOutWindow();
         _hotApprove(BASE, 1, address(chains[BASE].guardian), 1);
         assertEq(tw.trips(), 3, "guardian cut to dust trips");
     }
@@ -260,6 +282,7 @@ contract TripwireReactiveTest is Fixture {
         assertEq(tw.trips(), 0);
         _panic(ETH, cosigner);
         assertEq(tw.trips(), 1);
+        _waitOutWindow();
         _panic(UNI, hot);
         assertEq(tw.trips(), 2);
 
@@ -286,6 +309,7 @@ contract TripwireReactiveTest is Fixture {
         rec.logIndex = logIndex_;
         _react(rec);
         // same tx and log index on another chain is a different log
+        _waitOutWindow();
         rec.chainId = ETH;
         rec.contractAddress = address(_token(ETH, 0));
         _react(rec);
@@ -304,10 +328,137 @@ contract TripwireReactiveTest is Fixture {
         _react(rec);
         assertEq(tw.trips(), 1);
         assertEq(sys.requestCount(), 3);
-        // the next transaction trips again
+        // without the time window, the next transaction trips again
+        tw.setTripCooldown(0);
         rec.txHash = 42;
         _react(rec);
         assertEq(tw.trips(), 2);
+        assertEq(sys.requestCount(), 6);
+    }
+
+    // ------------------------------------------------------------ merge window
+
+    /// The attack from the review: the hot key's holder sends phishing approvals in separate transactions to burn
+    /// the reserves. Inside the window they cost one sweep set, and each is still on record.
+    function test_window_repeatedPhishingApprovals_oneSweepSet() public {
+        _hotApprove(BASE, 0, attacker, type(uint256).max);
+        assertEq(tw.trips(), 1);
+        assertEq(sys.requestCount(), 3);
+        for (uint256 i; i < 6; ++i) {
+            vm.warp(block.timestamp + 40); // 6 x 40 s = 240 s, inside the 300 s window
+            uint256 c = ids[i % 3];
+            vm.recordLogs();
+            vm.prank(hot);
+            _token(c, i % TOKENS).approve(attacker, type(uint256).max);
+            IReactive.LogRecord memory rec = _record(c, vm.getRecordedLogs()[0], 1000 + i, 0);
+            vm.expectEmit(true, true, true, true, address(tw));
+            emit TripMerged(1, TripwireReactive.Reason.Approval, c, 1000 + i, 0);
+            _react(rec);
+        }
+        // a transfer and a Guardian revoke from the hot key merge too
+        _hotTransfer(UNI, 1, attacker, 1e18);
+        _hotApprove(ETH, 2, address(chains[ETH].guardian), 0);
+        assertEq(tw.trips(), 1, "one trip");
+        assertEq(sys.requestCount(), 3, "one callback per chain, not one per approval");
+        assertEq(_relay(), 0);
+        // the revoked token stays put (that's what revoking the guard does); everything else went home once
+        assertEq(_coldTotal(), (3 * TOKENS - 1) * START - 1e18, "everything else swept by the one sweep set");
+        assertEq(_token(ETH, 2).balanceOf(hot), START);
+    }
+
+    /// Merged moves don't extend the window: a thief can't keep it open with a move every few minutes and then
+    /// drain after it.
+    function test_window_mergedMovesDontExtendIt() public {
+        _hotApprove(BASE, 0, attacker, type(uint256).max);
+        uint256 t0 = block.timestamp;
+        vm.warp(t0 + 299);
+        _hotApprove(BASE, 1, attacker, type(uint256).max);
+        assertEq(tw.trips(), 1, "merged at 299 s");
+        vm.warp(t0 + 300);
+        _hotApprove(BASE, 2, attacker, type(uint256).max);
+        assertEq(tw.trips(), 2, "the window is 300 s from the trip that fired");
+        assertEq(tw.lastTripAt(), t0 + 300);
+    }
+
+    /// The thief waits out the window, then acts again (e.g. after the victim tops up HOT): the new move re-trips and
+    /// the new funds go home too.
+    function test_window_postWindowMove_newTrip() public {
+        _hotApprove(BASE, 0, attacker, type(uint256).max);
+        assertEq(_relay(), 0);
+        assertEq(_coldTotal(), 3 * TOKENS * START);
+
+        _waitOutWindow();
+        _token(BASE, 1).mint(hot, 50e18);
+        _hotApprove(BASE, 1, address(0xD5A1), type(uint256).max);
+        assertEq(tw.trips(), 2);
+        assertEq(sys.requestCount(), 6);
+        assertEq(_relay(), 0);
+        assertEq(_token(BASE, 1).balanceOf(cold), START + 50e18, "the top-up was swept by trip #2");
+    }
+
+    /// The cosigner's panic is the owner's override: it fires inside the window (and starts a new one).
+    function test_window_cosignerPanicStillFires() public {
+        _hotApprove(BASE, 0, attacker, type(uint256).max);
+        vm.warp(block.timestamp + 10);
+        IReactive.LogRecord memory rec = _panicRecord(ETH, address(chains[ETH].panic), cosigner);
+        vm.expectEmit(true, true, true, true, address(tw));
+        emit Tripped(2, TripwireReactive.Reason.Panic, ETH, rec.txHash, 0);
+        _react(rec);
+        assertEq(tw.trips(), 2);
+        assertEq(sys.requestCount(), 6);
+        _panic(UNI, cosigner);
+        assertEq(tw.trips(), 3, "every cosigner press fires");
+        assertEq(tw.lastTripAt(), block.timestamp);
+    }
+
+    /// The hot key's panic is merged like its other moves (the thief holds that key too), and fires after the window.
+    function test_window_hotPanicMergesInsideWindow() public {
+        _hotApprove(BASE, 0, attacker, type(uint256).max);
+        for (uint256 i; i < 5; ++i) {
+            _panic(ids[i % 3], hot);
+        }
+        assertEq(tw.trips(), 1);
+        assertEq(sys.requestCount(), 3);
+        _waitOutWindow();
+        _panic(BASE, hot);
+        assertEq(tw.trips(), 2);
+    }
+
+    function testFuzz_window_cooldown(uint64 cooldown_, uint64 gap_) public {
+        cooldown_ = uint64(bound(cooldown_, 0, tw.MAX_TRIP_COOLDOWN()));
+        gap_ = uint64(bound(gap_, 0, 2 days));
+        tw.setTripCooldown(cooldown_);
+        _hotTransfer(BASE, 0, attacker, 1e18);
+        vm.warp(block.timestamp + gap_);
+        _hotTransfer(ETH, 0, attacker, 1e18); // another transaction
+        assertEq(tw.trips(), gap_ >= cooldown_ ? 2 : 1);
+        assertEq(sys.requestCount(), gap_ >= cooldown_ ? 6 : 3);
+    }
+
+    function test_window_config() public {
+        assertEq(tw.tripCooldown(), tw.DEFAULT_TRIP_COOLDOWN());
+        tw.setTripCooldown(1 hours);
+        assertEq(tw.tripCooldown(), 1 hours);
+        uint64 tooLong = tw.MAX_TRIP_COOLDOWN() + 1;
+        vm.expectRevert(TripwireReactive.TooMany.selector);
+        tw.setTripCooldown(tooLong);
+        vm.prank(attacker);
+        vm.expectRevert(TripwireReactive.NotOwner.selector);
+        tw.setTripCooldown(0);
+    }
+
+    /// Every verdict names its origin transaction and log index.
+    function test_observed_carriesOriginTxAndLogIndex() public {
+        IReactive.LogRecord memory rec = _transferRecord(BASE, address(_token(BASE, 0)), hot, attacker, 1e18);
+        rec.txHash = 0xabc;
+        rec.logIndex = 7;
+        vm.expectEmit(true, true, true, true, address(tw));
+        emit Observed(BASE, rec.topic0, attacker, 1e18, TripwireReactive.Verdict.Tripped, 0xabc, 7);
+        _react(rec);
+        rec.logIndex = 8;
+        vm.expectEmit(true, true, true, true, address(tw));
+        emit Observed(BASE, rec.topic0, attacker, 1e18, TripwireReactive.Verdict.Merged, 0xabc, 8);
+        _react(rec);
     }
 
     function test_noGuardian_noCallbackForThatChain() public {
@@ -325,6 +476,10 @@ contract TripwireReactiveTest is Fixture {
     }
 
     // ------------------------------------------------------------ helpers
+
+    function _waitOutWindow() internal {
+        vm.warp(block.timestamp + tw.tripCooldown());
+    }
 
     function _react(IReactive.LogRecord memory rec_) internal {
         vm.prank(SYSTEM_ADDR);

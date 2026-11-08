@@ -46,7 +46,11 @@ contract Guardian is AbstractCallback {
 
     event Swept(uint256 indexed tripId, address indexed token, uint256 amount);
     event Skipped(uint256 indexed tripId, address indexed token, SkipReason reason);
-    event SweepDone(uint256 indexed tripId, uint256 swept, uint256 skipped);
+    /// @param swept Tokens moved (one `Swept` each).
+    /// @param skipped Tokens with a `Skipped` event, including the one where gas ran short (`OutOfGas`).
+    /// @param unhandled Tokens with neither event: past `MAX_TOKENS`, or after the sweep stopped for gas.
+    ///        `swept + skipped + unhandled` is the length of the token list.
+    event SweepDone(uint256 indexed tripId, uint256 swept, uint256 skipped, uint256 unhandled);
     event Replayed(uint256 indexed tripId);
 
     error ZeroAddress();
@@ -88,9 +92,11 @@ contract Guardian is AbstractCallback {
 
         uint256 n = tokens_.length < MAX_TOKENS ? tokens_.length : MAX_TOKENS;
         uint256 swept;
+        uint256 skipped;
         for (uint256 i; i < n; ++i) {
             address token = tokens_[i];
             if (gasleft() < MIN_GAS_PER_TOKEN) {
+                ++skipped;
                 emit Skipped(tripId_, token, SkipReason.OutOfGas);
                 break;
             }
@@ -99,10 +105,11 @@ contract Guardian is AbstractCallback {
                 ++swept;
                 emit Swept(tripId_, token, amount);
             } else {
+                ++skipped;
                 emit Skipped(tripId_, token, reason);
             }
         }
-        emit SweepDone(tripId_, swept, tokens_.length - swept);
+        emit SweepDone(tripId_, swept, skipped, tokens_.length - swept - skipped);
     }
 
     /// @notice Settles any callback debt from this contract's own balance. Anyone may call it.

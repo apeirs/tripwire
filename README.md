@@ -35,7 +35,8 @@ everything else out of reach, on every chain at once.
          ┌───────────────────────────────────────────────────┐
          │ dedupe (chain, tx, log) ─ COLD / trusted? ─ under │
          │ threshold? ─ live intent? ─ otherwise TRIP        │
-         │ TRIP: one requestCallbackV_1_0 per chain          │
+         │ TRIP: one requestCallbackV_1_0 per chain, unless  │
+         │ it merges into the last trip (same tx / window)   │
          └──────┬───────────────────┬────────────────────┬───┘
                 ▼                   ▼                    ▼
          callback proxy       callback proxy       callback proxy
@@ -58,14 +59,27 @@ everything else out of reach, on every chain at once.
    | `Panic(caller)` | never | caller is HOT or the cosigner |
    | `Intend(cosigner, token, to, amount, expiry)` | stores an intent for that chain, token and recipient (at most 1 day; used up as transfers arrive) | never |
 
-   Each log is handled once (key = chain id, tx hash, log index), and consecutive logs from one origin transaction
-   trip once, so a multicall that moves three tokens costs one trip. Every decision is logged as
-   `Observed(chain, topic0, counterparty, amount, verdict)`; a trip also emits `Tripped(tripId, reason, chain, tx,
-   logIndex)` and one `SweepRequested` per chain.
+   Each log is handled once (key = chain id, tx hash, log index). Every decision is logged as
+   `Observed(chain, topic0, counterparty, amount, verdict, tx, logIndex)`, so each verdict names the exact origin log;
+   a trip also emits `Tripped(tripId, reason, chain, tx, logIndex)` and one `SweepRequested` per chain.
+
+   **Trips merge.** A move that would trip but comes from the same origin transaction as the last trip, or less than
+   `tripCooldown` (default 5 minutes) after it, requests no new sweep: its verdict is `Merged` and it emits
+   `TripMerged(tripId, reason, chain, tx, logIndex)`, so it is on record but costs no callbacks. A multicall that
+   moves three tokens, or a thief who sends approval after approval with the hot key, costs one sweep per chain per
+   window instead of one per transaction. The window runs from the trip that fired and merged moves never extend it,
+   so the first untrusted move after it trips again (a thief who waits it out, or new funds pulled later, get a new
+   sweep). A `Panic` from the cosigner always fires, window or not; a `Panic` from the hot key is merged like the hot
+   key's other moves, since a thief holds that key too. The clock is Reactive Network's `block.timestamp`: a
+   `LogRecord` carries no origin timestamp, and block numbers from different chains can't be compared, while one trip
+   sweeps every chain. The owner sets the window with `setTripCooldown` (0 to 1 day; 0 merges same-tx trips only).
 3. **Destination.** On a trip, each chain with a Guardian and at least one token gets a callback to
    `Guardian.sweep(tripId, tokens)`. For each token the Guardian moves `min(balanceOf(HOT), allowance(HOT, Guardian))`
    from HOT to COLD and emits `Swept`. A token that reverts, burns gas, returns false or isn't a contract is skipped
-   (`Skipped` with the reason); the rest still move. A trip id is handled once per Guardian.
+   (`Skipped` with the reason); the rest still move. `SweepDone(tripId, swept, skipped, unhandled)` closes each sweep:
+   `skipped` counts the `Skipped` events, `unhandled` the tokens that got neither event (past `MAX_TOKENS` = 32, or
+   after the sweep stopped short of gas), and the three add up to the list length. A trip id is handled once per
+   Guardian.
 
 The sweep's own `Transfer(HOT → COLD)` logs come back to `react()` and clear (COLD is always trusted), so the loop
 settles by itself. That path is tested, including tokens that emit a fresh `Approval` when an allowance is spent.
@@ -82,7 +96,7 @@ settles by itself. That path is tested, including tokens that emit a fresh `Appr
 
 ## Safety properties (and the tests that hold them)
 
-`forge test`: **55 tests** (39 unit and scenario, 11 fuzz at 512 runs each, 5 invariants at 128 runs × 64 calls).
+`forge test`: **64 tests** (46 unit and scenario, 12 fuzz at 512 runs each, 6 invariants at 128 runs × 64 calls).
 
 - **Only COLD ever receives.** `COLD` is immutable and is the only recipient in the code. Fuzzed over random
   hot/cold/amounts (`testFuzz_onlyColdEverReceives`) and held as an invariant across random drains, approvals,
@@ -98,6 +112,13 @@ settles by itself. That path is tested, including tokens that emit a fresh `Appr
   `test_approval_rules`.
 - **Dedupe.** The same log twice trips once; one tx with three Transfer logs trips once
   (`test_dedupe_*`, `test_coalesce_oneTripPerOriginTx`).
+- **Repeated trips can't burn the reserves.** Eight untrusted moves in separate transactions inside the window cost
+  one sweep set and each emits `TripMerged` (`test_window_repeatedPhishingApprovals_oneSweepSet`); merged moves don't
+  extend the window (`test_window_mergedMovesDontExtendIt`); the first move after it re-trips and sweeps new funds
+  (`test_window_postWindowMove_newTrip`); the cosigner's panic fires inside it, the hot key's doesn't
+  (`test_window_cosignerPanicStillFires`, `test_window_hotPanicMergesInsideWindow`); fuzzed over window and gap
+  (`testFuzz_window_cooldown`). Invariant: outside a cosigner panic, sweeps are never requested twice within one
+  window (`invariant_tripsRespectWindow`).
 - **Hostile tokens can't block a sweep**: no-return (USDT-style), false-return, reverting, gas-burning and
   return-bomb tokens, re-entrancy (`test_weirdTokens_skippedOthersStillSwept`, `test_reentrancy_cannotSweepAgain`).
 - **A sweep never runs out of gas and undoes itself.** Each token call is capped at 100k gas and a token is only
@@ -115,10 +136,15 @@ scenarios end to end; `test/DemoTrace.t.sol` runs the demo story and prints its 
 |---|---|---|
 | `Guardian.sweep`, 1 / 3 / 8 / 16 tokens (cold accounts) | 60k / 130k / 305k / 584k | budget asserted: 45k + 40k per token |
 | Callback gas limit requested | 650k + 60k per token | unused gas isn't billed |
-| `react()` that trips (3 chains × 3 tokens) | ~162k | Lasna fee = basefee × (gas + 100k) ≈ 0.026 lREACT at 100 gwei |
+| `react()` that trips (3 chains × 3 tokens) | ~168k | Lasna fee = basefee × (gas + 100k) ≈ 0.027 lREACT at 100 gwei, plus one callback per chain |
 | `react()` that clears (e.g. HOT → COLD) | ~29k | ≈ 0.013 lREACT |
-| Deploy `TripwireReactive` | ≈4.1M in tests (incl. 9 subscriptions to a mock) | ≈ 0.4 lREACT at 100 gwei |
-| Deploy `Guardian` / `Intent` / `PanicButton` | 755k / 214k / 85k | fractions of a cent on L2 Sepolias |
+| `react()` that merges into the last trip | ~34k | ≈ 0.013 lREACT, no callbacks |
+| Deploy `TripwireReactive` | ≈4.25M in tests (incl. 9 subscriptions to a mock) | ≈ 0.43 lREACT at 100 gwei |
+| Deploy `Guardian` / `Intent` / `PanicButton` | ≈763k / 214k / 85k | fractions of a cent on L2 Sepolias |
+
+Worst case under abuse: a thief holding the hot key can make it fire at most once per window (default 5 minutes),
+i.e. at most 12 trips an hour, ≈ 0.32 lREACT and 12 callbacks per chain an hour, plus ≈ 0.013 lREACT per merged
+move they pay origin gas to send. With `tripCooldown` = 0, every untrusted transaction is a full trip.
 
 ## Threat model and honest limits
 
@@ -144,13 +170,18 @@ topics are delivered, so a look-alike token can't reach it); forged or replayed 
 - **False positives send everything home.** A payment you forgot to pre-clear moves all approved tokens to COLD:
   safe, a little annoying. Pre-clear the address that actually *receives* the tokens: a DEX swap usually moves them
   from HOT to a pool, not to the router you approved, so trust that pool or pre-clear it too.
-- **Each untrusted transaction is its own trip.** Three phishing approvals in three transactions are three trips,
-  each with a callback on every chain; the later ones sweep nothing but still cost gas. A thief holding the key can
-  burn the reserves this way, after everything has already been swept.
+- **The merge window is a trade-off.** Inside it, untrusted moves request no new sweep. A thief can trip Tripwire
+  with a decoy, let the sweep land, and pull funds that reach HOT later in the same window; the first such move
+  after the window re-trips. If a sweep failed (an unfunded Guardian, a dropped callback), moves inside the window
+  don't retry it: press panic from the cosigner, which always fires. Outside it, a thief with the hot key can still
+  make Tripwire fire once per window, so the reserves drain slowly instead of at once; watch the trips on the demo
+  page and top up or rotate. A shorter `tripCooldown` re-arms sooner and spends more. The window runs on Reactive
+  Network's clock, so a backlog of origin logs delivered late is judged by when it arrives. If the cosigner is the hot
+  key, panic presses are never merged and the thief can spend that way.
 - **Funding.** A reactive contract or Guardian in debt goes silent. Keep both funded (`depositTo`) and watch them
   (the demo page shows the reactive balance and each Guardian's callback debt).
-- **Owner of the reactive contract** can change tokens, thresholds, trusted addresses and Guardians on Reactive
-  Network. It can't redirect funds: every Guardian pays only COLD. Keep that key off the hot wallet too.
+- **Owner of the reactive contract** can change tokens, thresholds, trusted addresses, Guardians and the merge
+  window on Reactive Network. It can't redirect funds: every Guardian pays only COLD. Keep that key off the hot wallet too.
 
 ## Why Reactive and not a keeper bot
 
@@ -223,7 +254,8 @@ MODE=deploy|phish|pull|sweep forge script script/Drainer.s.sol:DrainerScript --r
 
 [`demo/`](demo/) is a static page (no build step, no dependencies) that reads the chains from public RPCs and shows
 the loop as it happens: the watched move on the origin chain, the `Tripped` reaction on Lasna, and each Guardian's
-sweep, with explorer links, block timestamps and the latency between steps. It also shows hot vs vault balances,
+sweep, with explorer links, block timestamps and the latency between steps. Verdicts link to their moves by origin
+tx and log index, and moves merged into a trip are listed on its card. It also shows hot vs vault balances,
 whether each Guardian is still approved, the reactive contract's lREACT balance and each Guardian's callback debt.
 
 ```bash

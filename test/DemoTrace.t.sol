@@ -22,6 +22,8 @@ import {Drainer} from "../src/mocks/Drainer.sol";
 ///         2. Base: the hot wallet signs a phishing approval for tETH (trip #1).
 ///         3. Every chain's Guardian sweeps; the sweeps' own transfers come back and clear.
 ///         4. Base: the drainer pulls and gets nothing.
+///         5. Base, a minute later: a second phishing approval (tDAI) in its own transaction. It is inside the merge
+///            window, so it is recorded (`TripMerged`, verdict `Merged`) but requests no new sweeps.
 ///
 /// Regenerate: forge test --mt test_demoTrace -vv --json | node demo/tools/build-fixture.mjs > demo/fixture.json
 contract DemoTraceTest is OmniSim {
@@ -132,6 +134,16 @@ contract DemoTraceTest is OmniSim {
             }
         }
         assertEq(tUsd.balanceOf(cold), 975e6, "Base tUSD home, minus the paid 25");
+
+        // 5. a second phishing approval in a new transaction, inside the merge window
+        vm.warp(block.timestamp + 60);
+        uint256 requests = sys.requestCount();
+        vm.recordLogs();
+        vm.prank(hot);
+        tokensOf[BASE][2].approve(address(drainer), type(uint256).max);
+        _origin("phish2", BASE, vm.getRecordedLogs());
+        assertEq(tw.trips(), 1, "merged into trip #1");
+        assertEq(sys.requestCount(), requests, "no new sweep requested");
         console.log("END");
     }
 

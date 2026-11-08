@@ -470,6 +470,7 @@
             <div class="step wide"><div class="step-h">3 · Guardian sweeps</div>${sweeps || `<span class="muted">no Guardian configured</span>`}</div>
           </div>
           ${all != null ? `<footer>Every chain swept <b>${esc(C.formatMs(all, true).replace("+", ""))}</b> after the origin block.</footer>` : ""}
+          ${trip.merged.length ? `<footer class="muted">${trip.merged.length} later move${trip.merged.length === 1 ? "" : "s"} merged into this trip, no new sweep: ${trip.merged.map((m) => `${esc(m.reason)} ${txLink(m.chainId, m.txHash)}`).join(", ")}</footer>` : ""}
         </article>`;
       })
       .join("");

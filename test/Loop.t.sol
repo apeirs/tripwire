@@ -176,5 +176,16 @@ contract LoopTest is Fixture {
         g0 = gasleft();
         tw.react(rec);
         console.log("react() cleared transfer: gas %d", g0 - gasleft());
+
+        // an untrusted move in a later transaction, inside the merge window: recorded, no callbacks
+        rec.topic2 = uint256(uint160(attacker));
+        rec.txHash = 2;
+        vm.prank(SYSTEM_ADDR);
+        g0 = gasleft();
+        tw.react(rec);
+        used = g0 - gasleft();
+        assertEq(tw.trips(), 1);
+        console.log("react() merged trip: gas %d", used);
+        assertLe(used, 60_000, "merged trip over budget");
     }
 }

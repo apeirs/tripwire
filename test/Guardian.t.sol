@@ -32,6 +32,7 @@ contract GuardianTest is Test {
 
     event Swept(uint256 indexed tripId, address indexed token, uint256 amount);
     event Skipped(uint256 indexed tripId, address indexed token, Guardian.SkipReason reason);
+    event SweepDone(uint256 indexed tripId, uint256 swept, uint256 skipped, uint256 unhandled);
     event Replayed(uint256 indexed tripId);
 
     function setUp() public {
@@ -233,14 +234,23 @@ contract GuardianTest is Test {
         for (uint256 i; i < 40; ++i) {
             list[i] = address(a);
         }
+        // the first moves everything, the next 31 find nothing, the last 8 are past MAX_TOKENS
+        vm.expectEmit(true, false, false, true, address(g));
+        emit SweepDone(1, 1, 31, 8);
         (bool ok,) = proxy.deliver(address(g), tripwire, 30_000_000, _payload(1, list));
         assertTrue(ok);
         assertEq(a.balanceOf(cold), 100e18);
     }
 
     function test_lowGas_skipsTailButNeverRevertsMovedTokens() public {
-        // Enough for the first token's reserve, not for the second.
-        (bool ok,) = proxy.deliver(address(g), tripwire, 200_000 + 420_000, _payload(1, _list(address(a), address(b))));
+        // Enough for the first token's reserve, not for the second: the second is skipped, the third not reached.
+        address[] memory list = new address[](3);
+        (list[0], list[1], list[2]) = (address(a), address(b), address(b));
+        vm.expectEmit(true, true, false, true, address(g));
+        emit Skipped(1, address(b), Guardian.SkipReason.OutOfGas);
+        vm.expectEmit(true, false, false, true, address(g));
+        emit SweepDone(1, 1, 1, 1);
+        (bool ok,) = proxy.deliver(address(g), tripwire, 200_000 + 420_000, _payload(1, list));
         assertTrue(ok, "sweep must not revert on low gas");
         assertEq(a.balanceOf(cold), 100e18, "first token kept");
         assertEq(b.balanceOf(cold), 0, "second skipped");

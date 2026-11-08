@@ -21,7 +21,7 @@ const CHAINS = {
 const T0 = Date.UTC(2026, 10, 8, 12, 0, 0); // synthetic start, 2026-11-08 12:00:00Z
 
 // Timing model (ms). Origin txs at fixed offsets; each hop lands in the first block after its delay.
-const ORIGIN_AT = { intend: 0, payment: 18_000, phish: 42_000 };
+const ORIGIN_AT = { intend: 0, payment: 18_000, phish: 42_000, phish2: 102_000 };
 const REACT_DELAY = 1_200; // origin block -> Lasna block with react()
 const CALLBACK_DELAY = { 84532: 1_400, 1301: 1_900, 11155111: 2_500 }; // Lasna block -> destination inclusion
 const ECHO_GAP = 350; // spacing between successive react() txs for one batch of logs
@@ -120,6 +120,7 @@ function main() {
       "Base Sepolia: the hot wallet signs an unlimited tETH approval for a drainer contract. Trip #1.",
       "Every chain's Guardian sweeps the approved tokens to COLD; the sweeps' own transfers clear.",
       "The drainer pulls tETH and gets nothing: the hot wallet is already empty.",
+      "A minute later, a second phishing approval (tDAI) in its own transaction: merged into trip #1, no new sweep.",
     ],
     config,
     initialBalances,

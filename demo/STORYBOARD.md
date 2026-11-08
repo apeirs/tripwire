@@ -15,8 +15,10 @@ the cut only: entries without on-chain transactions aren't scored, and the repla
 5. Fresh state: HOT holds 1,000 of each demo token on every chain (`DeployMocks`), vault empty, no trips yet.
    After a take, re-mint to HOT (`cast send $TOKEN "mint(address,uint256)" $HOT ...`) and re-arm if needed.
 6. **Use one token in the phishing step** (`TOKENS=$TETH`). `MODE=phish` with three tokens sends three approval
-   transactions, and each separate transaction is its own trip, so the page would show three trips where two
-   sweep nothing.
+   transactions: the first trips, the other two merge into it (listed on the trip card as merged, no new sweep).
+   Correct, but busier on screen. **Between takes, wait out the merge window** (`tripCooldown`, 5 minutes by
+   default, counted from the last trip): a trip inside it merges into the previous take's trip instead of firing.
+   Only the cosigner's panic fires regardless.
 7. Deploy the demo drainer on Base Sepolia from the attacker key and note `DRAINER`:
    `MODE=deploy forge script script/Drainer.s.sol:DrainerScript --rpc-url $BASE_RPC --broadcast`.
 

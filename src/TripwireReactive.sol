@@ -17,8 +17,11 @@ import {Guardian} from "./Guardian.sol";
 ///      3. a live intent from the cosigner covers it (consumed as used).
 ///      Anything else trips. So does the Guardian's own allowance dropping below `GUARDIAN_ALLOWANCE_FLOOR` (a thief
 ///      revoking the guard first), and a `Panic` from the hot wallet or the cosigner.
-///      Every log is processed at most once (key = chain id, tx hash, log index), and one origin transaction trips
-///      at most once.
+///      Every log is processed at most once (key = chain id, tx hash, log index).
+///      Trips merge: a second trip from the same origin transaction, or any trip less than `tripCooldown` seconds
+///      (Reactive Network block time) after the last one that fired, requests no new sweep. It is still recorded
+///      (`TripMerged`, and `Observed` with verdict `Merged`). The window starts at the trip that fired and is never
+///      extended by merged ones, so a trip after it always fires again. A `Panic` from the cosigner always fires.
 contract TripwireReactive is AbstractReactive {
     enum Reason {
         Transfer,
@@ -32,7 +35,8 @@ contract TripwireReactive is AbstractReactive {
         UnderThreshold,
         Intended,
         Tripped,
-        Coalesced,
+        /// @dev Would have tripped, but folded into the latest trip (same origin tx, or inside `tripCooldown`).
+        Merged,
         Ignored
     }
 
@@ -57,6 +61,12 @@ contract TripwireReactive is AbstractReactive {
     uint256 public constant MAX_TOKENS_PER_CHAIN = 16;
     uint64 public constant MAX_INTENT_TTL = 1 days;
 
+    /// @notice Merge window after a trip, in seconds of Reactive Network block time. Long enough for the requested
+    ///         sweeps to land on every chain (Ethereum Sepolia's 12-second blocks included), short enough that a
+    ///         new move soon after re-trips. Owner-settable up to `MAX_TRIP_COOLDOWN`; 0 merges same-tx trips only.
+    uint64 public constant DEFAULT_TRIP_COOLDOWN = 5 minutes;
+    uint64 public constant MAX_TRIP_COOLDOWN = 1 days;
+
     /// @notice An approval to the Guardian below this counts as the guard being revoked. Approve it with max uint.
     uint256 public constant GUARDIAN_ALLOWANCE_FLOOR = 1 << 128;
 
@@ -75,6 +85,10 @@ contract TripwireReactive is AbstractReactive {
     uint256 public trips;
     /// @notice keccak(chain id, tx hash) of the origin transaction behind the latest trip.
     bytes32 public lastTripTx;
+    /// @notice Reactive Network `block.timestamp` of the latest trip that requested sweeps.
+    uint64 public lastTripAt;
+    /// @notice Trips within this many seconds of `lastTripAt` merge into it (see the contract notes).
+    uint64 public tripCooldown;
 
     uint256[] internal _chainIds;
     mapping(uint256 chainId => ChainConfig) internal _chains;
@@ -85,10 +99,21 @@ contract TripwireReactive is AbstractReactive {
     mapping(bytes32 key => IntentSlot) public intents;
     mapping(bytes32 logKey => bool) public seen;
 
+    /// @param txHash Origin transaction of the log, so a verdict links to its move exactly (with `logIndex`).
     event Observed(
-        uint256 indexed chainId, uint256 indexed topic0, address indexed counterparty, uint256 amount, Verdict verdict
+        uint256 indexed chainId,
+        uint256 indexed topic0,
+        address indexed counterparty,
+        uint256 amount,
+        Verdict verdict,
+        uint256 txHash,
+        uint256 logIndex
     );
     event Tripped(
+        uint256 indexed tripId, Reason indexed reason, uint256 indexed chainId, uint256 txHash, uint256 logIndex
+    );
+    /// @notice A move that would have tripped, folded into trip `tripId` without new sweeps.
+    event TripMerged(
         uint256 indexed tripId, Reason indexed reason, uint256 indexed chainId, uint256 txHash, uint256 logIndex
     );
     event SweepRequested(uint256 indexed tripId, uint256 indexed chainId, address guardian, uint256 tokens);
@@ -99,6 +124,7 @@ contract TripwireReactive is AbstractReactive {
     event TokenRemoved(uint256 indexed chainId, address indexed token);
     event ThresholdSet(uint256 indexed chainId, address indexed token, uint256 threshold);
     event TrustedSet(address indexed account, bool trusted);
+    event TripCooldownSet(uint64 cooldown);
     event OwnerSet(address indexed owner);
 
     error NotOwner();
@@ -141,6 +167,8 @@ contract TripwireReactive is AbstractReactive {
         COSIGNER = cosigner_;
         owner = msg.sender;
         emit OwnerSet(msg.sender);
+        tripCooldown = DEFAULT_TRIP_COOLDOWN;
+        emit TripCooldownSet(DEFAULT_TRIP_COOLDOWN);
 
         for (uint256 i; i < chainIds_.length; ++i) {
             uint256 chainId = chainIds_[i];
@@ -249,6 +277,13 @@ contract TripwireReactive is AbstractReactive {
         emit TrustedSet(account_, trusted_);
     }
 
+    /// @notice Sets the merge window. Longer spends less on repeated trips; shorter re-arms sooner after a sweep.
+    function setTripCooldown(uint64 cooldown_) external onlyOwner {
+        if (cooldown_ > MAX_TRIP_COOLDOWN) revert TooMany();
+        tripCooldown = cooldown_;
+        emit TripCooldownSet(cooldown_);
+    }
+
     function setOwner(address owner_) external onlyOwner {
         owner = owner_;
         emit OwnerSet(owner_);
@@ -299,7 +334,7 @@ contract TripwireReactive is AbstractReactive {
 
         if (!isTransfer && counterparty == _chains[log_.chainId].guardian) {
             // Approval to our own Guardian: fine while it stays (near) infinite, a trip if someone cuts it.
-            verdict = amount >= GUARDIAN_ALLOWANCE_FLOOR ? Verdict.Trusted : _trip(Reason.GuardianRevoked, log_);
+            verdict = amount >= GUARDIAN_ALLOWANCE_FLOOR ? Verdict.Trusted : _trip(Reason.GuardianRevoked, log_, false);
         } else if (counterparty == COLD || trusted[counterparty] || (!isTransfer && amount == 0)) {
             verdict = Verdict.Trusted;
         } else if (amount <= threshold[log_.chainId][token]) {
@@ -307,9 +342,9 @@ contract TripwireReactive is AbstractReactive {
         } else if (_consumeIntent(log_.chainId, token, counterparty, amount)) {
             verdict = Verdict.Intended;
         } else {
-            verdict = _trip(isTransfer ? Reason.Transfer : Reason.Approval, log_);
+            verdict = _trip(isTransfer ? Reason.Transfer : Reason.Approval, log_, false);
         }
-        emit Observed(log_.chainId, log_.topic0, counterparty, amount, verdict);
+        emit Observed(log_.chainId, log_.topic0, counterparty, amount, verdict, log_.txHash, log_.logIndex);
     }
 
     function _onIntend(LogRecord calldata log_) private {
@@ -330,8 +365,10 @@ contract TripwireReactive is AbstractReactive {
     function _onPanic(LogRecord calldata log_) private {
         address caller = address(uint160(log_.topic1));
         if (log_.contractAddress != _chains[log_.chainId].panicButton || (caller != HOT && caller != COSIGNER)) return;
-        Verdict verdict = _trip(Reason.Panic, log_);
-        emit Observed(log_.chainId, log_.topic0, caller, 0, verdict);
+        // The cosigner's panic always fires. The hot key's is merged like any other move from that key: a thief
+        // holding it could otherwise press panic in a loop and burn the callback reserves.
+        Verdict verdict = _trip(Reason.Panic, log_, caller == COSIGNER);
+        emit Observed(log_.chainId, log_.topic0, caller, 0, verdict, log_.txHash, log_.logIndex);
     }
 
     // ---------------------------------------------------------------- internals
@@ -348,10 +385,20 @@ contract TripwireReactive is AbstractReactive {
         return true;
     }
 
-    function _trip(Reason reason_, LogRecord calldata log_) private returns (Verdict) {
+    /// @dev Requests a sweep on every chain, unless the trip merges into the latest one (see the contract notes).
+    ///      `force_` skips merging (the cosigner's panic).
+    function _trip(Reason reason_, LogRecord calldata log_, bool force_) private returns (Verdict) {
         bytes32 txKey = keccak256(abi.encode(log_.chainId, log_.txHash));
-        if (txKey == lastTripTx) return Verdict.Coalesced;
+        if (
+            !force_ && trips != 0
+                && (txKey == lastTripTx || block.timestamp < uint256(lastTripAt) + uint256(tripCooldown))
+        ) {
+            emit TripMerged(trips, reason_, log_.chainId, log_.txHash, log_.logIndex);
+            return Verdict.Merged;
+        }
         lastTripTx = txKey;
+        // forge-lint: disable-next-line(unsafe-typecast) -- block timestamps fit in uint64.
+        lastTripAt = uint64(block.timestamp);
         uint256 tripId = ++trips;
         emit Tripped(tripId, reason_, log_.chainId, log_.txHash, log_.logIndex);
 

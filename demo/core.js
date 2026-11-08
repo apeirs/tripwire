@@ -16,14 +16,15 @@
     Approval: "Approval(address,address,uint256)", // ERC-20, origin chains
     Intend: "Intend(address,address,address,uint256,uint64)", // Intent.sol
     Panic: "Panic(address)", // PanicButton.sol
-    Observed: "Observed(uint256,uint256,address,uint256,uint8)", // TripwireReactive.sol
+    Observed: "Observed(uint256,uint256,address,uint256,uint8,uint256,uint256)", // TripwireReactive.sol
     Tripped: "Tripped(uint256,uint8,uint256,uint256,uint256)",
+    TripMerged: "TripMerged(uint256,uint8,uint256,uint256,uint256)",
     SweepRequested: "SweepRequested(uint256,uint256,address,uint256)",
     IntentSet: "IntentSet(uint256,address,address,uint256,uint64)",
     Duplicate: "Duplicate(uint256,uint256,uint256)",
     Swept: "Swept(uint256,address,uint256)", // Guardian.sol
     Skipped: "Skipped(uint256,address,uint8)",
-    SweepDone: "SweepDone(uint256,uint256,uint256)",
+    SweepDone: "SweepDone(uint256,uint256,uint256,uint256)",
     Replayed: "Replayed(uint256)",
     Drained: "Drained(address,address,uint256)", // mocks/Drainer.sol (demo attacker)
   };
@@ -34,14 +35,15 @@
     Approval: "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
     Intend: "0x8e4f070cc6cf5eecff91440bd35ab37a08452d8d9662b362754603a4ee3e0820",
     Panic: "0xa0281c9359a6afac738fb86a45f94a2482ed1f0bfbdf7ce5ef88046acf47160c",
-    Observed: "0x3d8d287d36f3353de0fbd46e9abf237b70d016ef302f80b45aa84b4e7c3f22c6",
+    Observed: "0x63e5f6ccb73b24849ea4762a6c15a7e218fd0ad7784fa2bd378af76ab9acec8e",
     Tripped: "0xaa6701e298483b7d6796e8f119631ff8a4cf927ba1c650516551a3a41a610da9",
+    TripMerged: "0xfc4d1a3b57f519e0c24fd993d2176865a4b330d04fae28c6dd883c500bbf7b44",
     SweepRequested: "0x78625e1b1840f194faa1e6e85ca37e1602c5dffb911a047b9de77fc71f2b60b1",
     IntentSet: "0xe837f29411d1efe18f0a710189f18e72b7273cb58087f6d8191925bd1084e590",
     Duplicate: "0x72153a0d937c9d9b40ca46ba00639da2150394ee5b0d5c7114fe4f66ba31d960",
     Swept: "0x635115695722305cd48dbad76225961b39079f2cf952cc198f13fb4904cf3512",
     Skipped: "0x451f6c4aebcec5b0829e8edf8ffd3beca371d621cad02d40849bbdf4fe3b4522",
-    SweepDone: "0xe34fe801a20ab900ab966c3f4dd77f7a59d5e9e53d4c1e3131b715b8511448af",
+    SweepDone: "0xc4f47909cba9367bb46194a7f7c5eb428cd6f0a47ad5871a140df9258be55f37",
     Replayed: "0x1f3abd952bb39ec1d1d011b716b5ed2b4d7636139a1c613f2b877495a44a8766",
     Drained: "0xbfd2431e6c719bec0308db4f4ed0afc39712d368867354c711a1ea1e384fa781",
   };
@@ -77,7 +79,7 @@
 
   // Enum orders from the contracts.
   const REASON = ["Transfer", "Approval", "GuardianRevoked", "Panic"]; // TripwireReactive.Reason
-  const VERDICT = ["Trusted", "UnderThreshold", "Intended", "Tripped", "Coalesced", "Ignored"]; // .Verdict
+  const VERDICT = ["Trusted", "UnderThreshold", "Intended", "Tripped", "Merged", "Ignored"]; // .Verdict
   const SKIP_REASON = ["NotAContract", "ReadFailed", "NothingToMove", "TransferFailed", "OutOfGas"]; // Guardian
   const GUARDIAN_ALLOWANCE_FLOOR = 1n << 128n;
   const REACTIVE_SYSTEM = "0x8888888888888888888888888888888888888888";
@@ -261,7 +263,7 @@
         ev.tripId = Number(toBig(t[1]));
         if (name === "Swept") Object.assign(ev, { token: norm(wordAddr(t[2])), amount: wordBig(d, 0) });
         if (name === "Skipped") Object.assign(ev, { token: norm(wordAddr(t[2])), reason: SKIP_REASON[Number(wordBig(d, 0))] || "?" });
-        if (name === "SweepDone") Object.assign(ev, { swept: Number(wordBig(d, 0)), skipped: Number(wordBig(d, 1)) });
+        if (name === "SweepDone") Object.assign(ev, { swept: Number(wordBig(d, 0)), skipped: Number(wordBig(d, 1)), unhandled: Number(wordBig(d, 2)) });
         return ev;
       }
       default:
@@ -276,8 +278,11 @@
           counterparty: norm(wordAddr(t[3])),
           amount: wordBig(d, 0),
           verdict: VERDICT[Number(wordBig(d, 1))] || "?",
+          originTx: "0x" + word(d, 2),
+          originLogIndex: Number(wordBig(d, 3)),
         });
       case "Tripped":
+      case "TripMerged":
         return Object.assign(ev, {
           tripId: Number(toBig(t[1])),
           reason: REASON[Number(toBig(t[2]))] || "?",
@@ -363,7 +368,7 @@
         if (ev.name === "Swept" || ev.name === "SweepDone" || ev.name === "Skipped" || ev.name === "Replayed") sweepTxs.add(ev.chainId + ":" + ev.txHash);
       }
       const tripOf = (id) => {
-        if (!trips.has(id)) trips.set(id, { tripId: id, requests: [], sweeps: {}, reactive: null, origin: null });
+        if (!trips.has(id)) trips.set(id, { tripId: id, requests: [], sweeps: {}, merged: [], reactive: null, origin: null });
         return trips.get(id);
       };
 
@@ -374,6 +379,15 @@
           trip.reactive = { chainId: ev.chainId, txHash: ev.txHash, ts: ev.ts, tsExact: ev.tsExact, blockNumber: ev.blockNumber };
           trip.originRef = { chainId: ev.originChainId, txHash: ev.originTx, logIndex: ev.originLogIndex };
           trip.origin = origin.get(keyOf(ev.originChainId, ev.originTx, ev.originLogIndex)) || null;
+        } else if (ev.name === "TripMerged") {
+          // A move folded into this trip: recorded on Reactive, no new sweep requested.
+          tripOf(ev.tripId).merged.push({
+            reason: ev.reason,
+            chainId: ev.originChainId,
+            txHash: ev.originTx,
+            logIndex: ev.originLogIndex,
+            origin: origin.get(keyOf(ev.originChainId, ev.originTx, ev.originLogIndex)) || null,
+          });
         } else if (ev.name === "SweepRequested") {
           tripOf(ev.tripId).requests.push({ chainId: ev.destChainId, guardian: ev.guardian, tokens: ev.tokens });
         } else if (["Swept", "Skipped", "SweepDone", "Replayed"].includes(ev.name)) {
@@ -383,29 +397,24 @@
           if (s.ts == null) s.ts = ev.ts;
           if (ev.name === "Swept") s.swept.push({ token: ev.token, amount: ev.amount });
           if (ev.name === "Skipped") s.skipped.push({ token: ev.token, reason: ev.reason });
-          if (ev.name === "SweepDone") s.done = { swept: ev.swept, skipped: ev.skipped };
+          if (ev.name === "SweepDone") s.done = { swept: ev.swept, skipped: ev.skipped, unhandled: ev.unhandled };
           if (ev.name === "Replayed") s.replayed = true;
         }
       }
 
-      // Verdicts: Observed carries no origin tx hash, so match it to the newest origin log on that chain with the
-      // same topic, counterparty and amount that hasn't been matched yet and isn't newer than the Observed.
+      // Verdicts: Observed names its origin log (chain, tx, log index), so each links to its move exactly. A merged
+      // verdict also gets the trip it was folded into, from the TripMerged event with the same origin log.
       const matched = new Set();
       const verdictOf = new Map();
+      const mergedInto = new Map();
+      for (const ev of evs) if (ev.name === "TripMerged") mergedInto.set(keyOf(ev.originChainId, ev.originTx, ev.originLogIndex), ev.tripId);
       for (const ev of evs) {
         if (ev.name === "Observed") {
-          let best = null;
-          for (const o of origin.values()) {
-            if (matched.has(o) || o.chainId !== ev.originChainId || o.name !== ev.observedTopic) continue;
-            if (ev.ts != null && o.ts != null && o.ts > ev.ts) continue;
-            const cp = o.name === "Transfer" ? o.to : o.name === "Approval" ? o.spender : o.name === "Panic" ? o.caller : null;
-            const amt = o.name === "Panic" ? 0n : o.value;
-            if (cp !== ev.counterparty || amt !== ev.amount) continue;
-            if (!best || (o.ts ?? 0) >= (best.ts ?? 0)) best = o;
-          }
-          if (best) {
-            matched.add(best);
-            verdictOf.set(best, ev);
+          const k = keyOf(ev.originChainId, ev.originTx, ev.originLogIndex);
+          const o = origin.get(k);
+          if (o && o.name === ev.observedTopic) {
+            matched.add(o);
+            verdictOf.set(o, mergedInto.has(k) ? Object.assign(ev, { mergedInto: mergedInto.get(k) }) : ev);
           }
         } else if (ev.name === "IntentSet") {
           for (const o of origin.values()) {
@@ -466,7 +475,7 @@
     UnderThreshold: "cleared: under threshold",
     Intended: "cleared: pre-cleared by an intent",
     Tripped: "TRIPPED",
-    Coalesced: "same tx as an earlier trip",
+    Merged: "merged into the latest trip: no new sweep",
     Ignored: "ignored",
   };
 
@@ -474,8 +483,14 @@
   function describe(ctx, ev, { verdictOf, sweepTxs }) {
     const base = { ts: ev.ts, tsExact: ev.tsExact, chainId: ev.chainId, txHash: ev.txHash, kind: "origin", event: ev.name };
     const v = verdictOf.get(ev);
-    const verdict = v ? (v.name === "IntentSet" ? "intent stored on Reactive" : VERDICT_TEXT[v.verdict]) : null;
-    const tripped = v && v.verdict === "Tripped";
+    const verdict = !v
+      ? null
+      : v.name === "IntentSet"
+        ? "intent stored on Reactive"
+        : v.mergedInto != null
+          ? `merged into trip #${v.mergedInto}: no new sweep`
+          : VERDICT_TEXT[v.verdict];
+    const tripped = v && (v.verdict === "Tripped" || v.verdict === "Merged"); // merged: would have tripped
     switch (ev.name) {
       case "Transfer":
         if (ev.from !== ctx.hot) return null;
@@ -494,7 +509,7 @@
       case "Tripped":
         return { ...base, kind: "trip", text: `Trip #${ev.tripId} (${ev.reason}) on Reactive: sweep requested on every chain` };
       case "SweepDone":
-        return { ...base, kind: "sweep", text: `Guardian swept ${ev.swept} token${ev.swept === 1 ? "" : "s"} to the vault (trip #${ev.tripId}${ev.skipped ? `, ${ev.skipped} skipped` : ""})` };
+        return { ...base, kind: "sweep", text: `Guardian swept ${ev.swept} token${ev.swept === 1 ? "" : "s"} to the vault (trip #${ev.tripId}${ev.skipped ? `, ${ev.skipped} skipped` : ""}${ev.unhandled ? `, ${ev.unhandled} not reached` : ""})` };
       case "Replayed":
         return { ...base, kind: "sweep", text: `Guardian ignored a replay of trip #${ev.tripId}` };
       case "Duplicate":

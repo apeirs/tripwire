@@ -17,6 +17,9 @@ contract TripwireHandler is Fixture {
     bool public replayMoved;
     mapping(uint256 chainId => mapping(uint256 k => uint256)) public hotToCold;
     uint256 public calls;
+    /// Trips that requested sweeps inside the merge window without being a cosigner panic, or several per action.
+    uint256 public windowViolations;
+    uint256 internal lastFiredAt;
 
     function setUp() public override {
         super.setUp();
@@ -52,12 +55,28 @@ contract TripwireHandler is Fixture {
 
     // ------------------------------------------------------------ actions
 
+    /// Checks the merge window around every action: outside a cosigner panic, a trip that requests sweeps comes at
+    /// least `tripCooldown` after the previous one, and one action (one origin tx, or one relay batch) fires at most
+    /// one trip.
+    modifier tracked(bool cosignerPanic_) {
+        uint256 before = tw.trips();
+        _;
+        uint256 fired = tw.trips() - before;
+        if (fired > 0) {
+            if (fired > 1) ++windowViolations;
+            if (!cosignerPanic_ && before != 0 && block.timestamp < lastFiredAt + tw.tripCooldown()) {
+                ++windowViolations;
+            }
+            lastFiredAt = block.timestamp;
+        }
+    }
+
     function _pick(uint256 seed_) internal view returns (uint256 chainId_, uint256 k_) {
         chainId_ = ids[seed_ % 3];
         k_ = (seed_ / 3) % TOKENS;
     }
 
-    function act_hotTransfer(uint256 seed_, uint256 amount_, uint8 toKind_) external {
+    function act_hotTransfer(uint256 seed_, uint256 amount_, uint8 toKind_) external tracked(false) {
         ++calls;
         (uint256 c, uint256 k) = _pick(seed_);
         uint256 bal = _token(c, k).balanceOf(hot);
@@ -68,7 +87,7 @@ contract TripwireHandler is Fixture {
         _hotTransfer(c, k, to, amount_);
     }
 
-    function act_hotApprove(uint256 seed_, uint256 amount_, uint8 spenderKind_) external {
+    function act_hotApprove(uint256 seed_, uint256 amount_, uint8 spenderKind_) external tracked(false) {
         ++calls;
         (uint256 c, uint256 k) = _pick(seed_);
         uint8 s = spenderKind_ % 4;
@@ -76,7 +95,7 @@ contract TripwireHandler is Fixture {
         _hotApprove(c, k, spender, amount_);
     }
 
-    function act_drain(uint256 seed_) external {
+    function act_drain(uint256 seed_) external tracked(false) {
         ++calls;
         (uint256 c, uint256 k) = _pick(seed_);
         vm.recordLogs();
@@ -85,37 +104,37 @@ contract TripwireHandler is Fixture {
         _deliver(address(tw), c, vm.getRecordedLogs());
     }
 
-    function act_intend(uint256 seed_, uint256 amount_, uint64 ttl_, bool toShop_) external {
+    function act_intend(uint256 seed_, uint256 amount_, uint64 ttl_, bool toShop_) external tracked(false) {
         ++calls;
         (uint256 c, uint256 k) = _pick(seed_);
         ttl_ = uint64(bound(ttl_, 1, 1 days));
         _intend(c, cosigner, k, toShop_ ? shop : attacker, bound(amount_, 0, START), ttl_);
     }
 
-    function act_panic(uint256 seed_, bool byCosigner_) external {
+    function act_panic(uint256 seed_, bool byCosigner_) external tracked(byCosigner_) {
         ++calls;
         (uint256 c,) = _pick(seed_);
         _panic(c, byCosigner_ ? cosigner : hot);
     }
 
-    function act_relay() external {
+    function act_relay() external tracked(false) {
         ++calls;
         _relayAndEcho();
     }
 
-    function act_mint(uint256 seed_, uint256 amount_) external {
+    function act_mint(uint256 seed_, uint256 amount_) external tracked(false) {
         ++calls;
         (uint256 c, uint256 k) = _pick(seed_);
         _token(c, k).mint(hot, bound(amount_, 1, START));
     }
 
-    function act_warp(uint32 dt_) external {
+    function act_warp(uint32 dt_) external tracked(false) {
         ++calls;
         vm.warp(block.timestamp + bound(dt_, 1, 2 days));
     }
 
     /// Re-delivers an already delivered callback through the real path. Must move nothing.
-    function act_replay(uint256 idx_) external {
+    function act_replay(uint256 idx_) external tracked(false) {
         ++calls;
         if (relayed == 0) return;
         MockSystem.Req memory r = sys.request(idx_ % relayed);
@@ -125,7 +144,10 @@ contract TripwireHandler is Fixture {
     }
 
     /// Anyone calling a Guardian directly, claiming any sender.
-    function act_forgeDirect(uint256 seed_, address caller_, address claimed_, uint256 tripId_) external {
+    function act_forgeDirect(uint256 seed_, address caller_, address claimed_, uint256 tripId_)
+        external
+        tracked(false)
+    {
         ++calls;
         (uint256 c,) = _pick(seed_);
         address[] memory list = tw.tokens(c);
@@ -136,7 +158,7 @@ contract TripwireHandler is Fixture {
     }
 
     /// Another reactive contract driving the real proxy.
-    function act_forgeViaProxy(uint256 seed_, address sender_, uint256 tripId_) external {
+    function act_forgeViaProxy(uint256 seed_, address sender_, uint256 tripId_) external tracked(false) {
         ++calls;
         if (sender_ == address(tw)) return;
         (uint256 c,) = _pick(seed_);
@@ -229,5 +251,10 @@ contract TripwireInvariantTest is StdInvariant, Test {
     /// Re-delivering a handled callback moves nothing.
     function invariant_replayIsNoOp() public view {
         assertFalse(h.replayMoved());
+    }
+
+    /// Repeated untrusted moves can't make it request sweeps faster than once per merge window (cosigner panic aside).
+    function invariant_tripsRespectWindow() public view {
+        assertEq(h.windowViolations(), 0);
     }
 }
