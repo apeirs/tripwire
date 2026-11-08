@@ -34,6 +34,8 @@
     replay: null,
     showRaw: false,
     error: null,
+    compact: new Set(), // live: older history trips, listed without their sweeps
+    history: null, // live: state of the past-trips load
   };
 
   // ------------------------------------------------------------------ helpers
@@ -215,6 +217,9 @@
     S.monitor = new C.Monitor(S.ctx);
     S.chainIds = Object.keys(chains).map(Number).sort(chainOrder);
     S.cursor = {};
+    S.lag = {}; // chainId -> blocks below the reported head to read up to (learned from 'beyond head' errors)
+    S.cleanPolls = {};
+    S.fails = {};
     S.blockTs = {};
     S.lookbackMin = Number(params.get("lookback") || cfg.lookbackMinutes || 10);
     S.pollMs = Number(params.get("poll") || cfg.pollMs || 4000);
@@ -223,12 +228,50 @@
     S.originFetched = new Set();
     render();
     loop();
+    loadPastTrips(cfg);
+  }
+
+  /**
+   * The deployment's past trips (core.js loadHistory): without this a page opened between demos shows "No trip yet"
+   * until the next trip. Runs beside the live poller; its logs go into the same Monitor, so overlaps dedupe.
+   * ?history=N loads the N newest trips with their sweeps (default 5), ?history=0 turns it off.
+   */
+  async function loadPastTrips(cfg) {
+    const recent = Number(params.get("history") ?? cfg.historyTrips ?? 5);
+    if (!(recent > 0)) return;
+    const fromBlock = params.get("fromBlock") ?? cfg.fromBlock;
+    S.history = { state: "loading" };
+    const update = (h) => {
+      S.history = { ...h, state: "loading" };
+      S.compact = new Set(h.compact);
+      S.newEvents = true;
+      render();
+    };
+    try {
+      const h = await C.loadHistory({
+        rpc,
+        ctx: S.ctx,
+        monitor: S.monitor,
+        nets: S.nets,
+        fromBlock: fromBlock != null && fromBlock !== "" ? Number(fromBlock) : null,
+        recent,
+        originFetched: S.originFetched,
+        onTrips: update,
+        onProgress: update,
+      });
+      S.history = { ...h, state: "done" };
+      console.info(`history: ${h.total} trips (${h.mode || "none"}), ${h.detailed.length} with sweeps, ${h.calls} RPC calls`);
+    } catch (e) {
+      S.history = { state: "failed", error: e.message };
+      console.warn("history:", e.message);
+    }
+    render();
   }
 
   async function loop() {
     const t0 = performance.now();
     const ids = [S.ctx.lasnaChainId, ...S.chainIds];
-    await Promise.all(ids.map((id) => pollChain(id).catch((e) => (S.status[id] = { ok: false, text: e.message }))));
+    await Promise.all(ids.map((id) => pollChain(id).catch((e) => pollFailed(id, e))));
     await fillTimestamps().catch((e) => console.warn(e));
     await fetchMissingOrigins().catch((e) => console.warn(e));
     if (performance.now() - S.lastBalances > S.balanceEvery || S.newEvents) {
@@ -252,31 +295,60 @@
     return f;
   }
 
+  // Public RPCs sit behind load balancers: eth_blockNumber and the eth_getLogs after it can reach different nodes, and
+  // the second may not have the newest block yet ("block range extends beyond current head block"). Every range is
+  // clamped to the head this RPC just reported, minus a lag learned from those errors; the cursor only moves on
+  // success, so a refused range is simply read again on the next poll. The lag decays after a minute of clean polls.
   async function pollChain(id) {
     const n = net(id);
     const latest = C.toNum(await rpc(id, "eth_blockNumber", []));
     if (S.cursor[id] == null) S.cursor[id] = Math.max(0, latest - Math.ceil((S.lookbackMin * 60000) / (n.blockMs || 1000)));
-    const range = n.maxRange || 1000;
+    S.lag[id] ??= 0;
+    const hex = (x) => "0x" + x.toString(16);
     let chunks = 0;
-    while (S.cursor[id] < latest && chunks++ < 25) {
-      const from = S.cursor[id] + 1;
-      const to = Math.min(latest, from + range - 1);
-      const hex = (x) => "0x" + x.toString(16);
-      const results = await Promise.all(logFilters(id).map((f) => rpc(id, "eth_getLogs", [{ ...f, fromBlock: hex(from), toBlock: hex(to) }])));
+    let raced = false;
+    let r;
+    while (chunks++ < 25 && (r = C.nextRange(S.cursor[id], latest, { maxRange: n.maxRange || 1000, lag: S.lag[id] }))) {
+      let results;
+      try {
+        results = await Promise.all(logFilters(id).map((f) => rpc(id, "eth_getLogs", [{ ...f, fromBlock: hex(r.from), toBlock: hex(r.to) }])));
+      } catch (e) {
+        const he = C.headError(e.message);
+        if (!he) throw e;
+        S.lag[id] = C.learnHeadLag(S.lag[id], latest, he);
+        raced = true;
+        break;
+      }
       const logs = results.flat().map((l) => {
         const hit = (S.blockTs[id] || {})[C.toNum(l.blockNumber)];
         return { ...l, chainId: id, blockTimestampMs: hit ? hit.ms : null, tsExact: hit ? hit.exact : false };
       });
       if (logs.length && S.monitor.ingest(logs)) S.newEvents = true;
-      S.cursor[id] = to;
+      S.cursor[id] = r.to;
     }
-    const behind = latest - S.cursor[id];
-    S.status[id] = { ok: true, text: behind > 0 ? `catching up, ${behind} blocks behind` : `block ${latest}` };
+    S.cleanPolls[id] = raced ? 0 : (S.cleanPolls[id] || 0) + 1;
+    if (S.cleanPolls[id] >= 15 && S.lag[id] > 0) {
+      S.lag[id]--;
+      S.cleanPolls[id] = 0;
+    }
+    S.fails[id] = 0;
+    const behind = latest - S.lag[id] - S.cursor[id];
+    const lagNote = S.lag[id] ? ` · reading ${S.lag[id]} below the RPC's head` : "";
+    S.status[id] = { ok: true, text: (behind > 0 ? `catching up, ${behind} blocks behind` : `block ${S.cursor[id]}`) + lagNote };
+  }
+
+  /** One failed poll is a public RPC's hiccup (timeout, rate limit): say it's retrying; red only when it repeats. */
+  function pollFailed(id, e) {
+    S.fails[id] = (S.fails[id] || 0) + 1;
+    const transient = S.fails[id] < 3 || C.headError(e.message);
+    S.status[id] = transient ? { ok: true, warn: true, text: `retrying (${e.message})` } : { ok: false, text: e.message };
   }
 
   async function fillTimestamps() {
     const need = new Map();
-    for (const ev of S.monitor.events) if (ev.ts == null) need.set(ev.chainId + ":" + ev.blockNumber, [ev.chainId, ev.blockNumber]);
+    // Only events that show on their own; an Observed or SweepRequested shares its block with what it explains.
+    const silent = new Set(["Observed", "SweepRequested", "IntentSet", "TripMerged"]);
+    for (const ev of S.monitor.events) if (ev.ts == null && !silent.has(ev.name)) need.set(ev.chainId + ":" + ev.blockNumber, [ev.chainId, ev.blockNumber]);
     await Promise.all(
       [...need.values()].slice(0, 40).map(async ([id, b]) => {
         const blk = await rpc(id, "eth_getBlockByNumber", ["0x" + b.toString(16), false]);
@@ -289,17 +361,23 @@
     );
   }
 
-  /** A trip whose origin log is older than the lookback window: fetch that one receipt. */
+  /** A trip whose origin log is older than the lookback window: fetch that one receipt (not for the older history
+   *  trips listed without detail). */
   async function fetchMissingOrigins() {
+    const jobs = [];
     for (const trip of S.monitor.view().trips) {
-      if (trip.origin || !trip.originRef) continue;
+      if (trip.origin || !trip.originRef || S.compact.has(trip.tripId)) continue;
       const k = trip.originRef.chainId + ":" + trip.originRef.txHash;
       if (S.originFetched.has(k) || !net(trip.originRef.chainId).rpc) continue;
       S.originFetched.add(k);
-      const rc = await rpc(trip.originRef.chainId, "eth_getTransactionReceipt", [trip.originRef.txHash]);
-      if (!rc) continue;
-      S.monitor.ingest(rc.logs.map((l) => ({ ...l, chainId: trip.originRef.chainId, blockTimestampMs: null })));
+      jobs.push(
+        rpc(trip.originRef.chainId, "eth_getTransactionReceipt", [trip.originRef.txHash])
+          .then((rc) => rc && S.monitor.ingest(rc.logs.map((l) => ({ ...l, chainId: trip.originRef.chainId, blockTimestampMs: null }))))
+          .catch((e) => (S.originFetched.delete(k), console.warn("origin", k, e.message))),
+      );
+      if (jobs.length >= 4) break;
     }
+    await Promise.all(jobs);
   }
 
   async function refreshBalances() {
@@ -386,7 +464,7 @@
     const h = S.health[L] || {};
     const statusDot = (id) => {
       const s = S.status[id] || { ok: true, text: "…" };
-      return `<span class="dot ${s.ok ? "ok" : "bad"}" title="${esc(s.text)}"></span><span class="muted small">${esc(s.text)}</span>`;
+      return `<span class="dot ${s.warn ? "warn" : s.ok ? "ok" : "bad"}" title="${esc(s.text)}"></span><span class="muted small">${esc(s.text)}</span>`;
     };
     const rows = S.chainIds
       .map((id) => {
@@ -437,12 +515,27 @@
     </section>`;
   }
 
+  /** One line under the Trips heading on how much of the deployment's history is shown. */
+  function historyNote() {
+    const h = S.history;
+    if (S.mode !== "live" || !h) return "";
+    if (h.state === "failed") return `<span class="muted small">past trips could not be loaded (${esc(h.error)}); showing live events only</span>`;
+    if (h.total == null) return `<span class="muted small">loading past trips…</span>`;
+    if (!h.total) return "";
+    const since = h.mode === "scan" && S.cfg.fromBlock != null ? ` since deploy (Reactive block ${Number(S.cfg.fromBlock).toLocaleString("en")})` : " so far";
+    const detail = h.compact.length ? `, the newest ${h.detailed.length} with their sweeps` : "";
+    return `<span class="muted small">${h.total} trip${h.total === 1 ? "" : "s"}${since}${detail}${h.state === "loading" ? " · loading…" : ""}</span>`;
+  }
+
   function renderTrips(v) {
     if (!v.trips.length) {
       const nTok = S.chainIds.reduce((n, id) => n + S.ctx.chains[id].tokens.length, 0);
-      return `<section class="panel"><h2>Trips</h2><p class="muted">No trip yet. Watching ${nTok} token${nTok === 1 ? "" : "s"} on ${S.chainIds.length} chain${S.chainIds.length === 1 ? "" : "s"}.</p></section>`;
+      const loading = S.history && S.history.state === "loading";
+      return `<section class="panel"><h2>Trips ${historyNote()}</h2><p class="muted">${loading ? "Loading past trips…" : "No trip yet."} Watching ${nTok} token${nTok === 1 ? "" : "s"} on ${S.chainIds.length} chain${S.chainIds.length === 1 ? "" : "s"}.</p></section>`;
     }
-    const cards = [...v.trips]
+    const missing = (S.history && S.history.missing) || new Set();
+    const cards = v.trips
+      .filter((t) => !S.compact.has(t.tripId))
       .reverse()
       .map((trip) => {
         const o = trip.origin;
@@ -456,6 +549,7 @@
           .map((q) => {
             const s = trip.sweeps[q.chainId];
             const lat = trip.latency.sweeps[q.chainId];
+            if (!s && missing.has(trip.tripId + ":" + q.chainId)) return `<div class="sweep pending">${chip(q.chainId)} <span class="muted">callback not found in the blocks read for this trip</span></div>`;
             if (!s) return `<div class="sweep pending">${chip(q.chainId)} <span class="muted">waiting for callback (${q.tokens} tokens)…</span></div>`;
             const moved = s.swept.map((x) => esc(C.amountStr(S.ctx, q.chainId, x.token, x.amount))).join(", ") || "nothing left to move";
             const skipped = s.skipped.length ? ` <span class="warn-t">skipped ${s.skipped.map((x) => esc(C.tokenMeta(S.ctx, q.chainId, x.token).symbol + ": " + x.reason)).join(", ")}</span>` : "";
@@ -466,10 +560,11 @@
           })
           .join("");
         const all = trip.latency.allSwept;
+        const notFound = trip.status !== "swept" && trip.requests.some((q) => !trip.sweeps[q.chainId] && missing.has(trip.tripId + ":" + q.chainId));
         return `<article class="trip trip-${trip.status}">
           <header><b>Trip #${trip.tripId}</b> <span class="pill pill-trip">${esc(trip.reason)}</span>
             <span class="muted">from ${esc(net(ref.chainId).name)}</span>
-            <span class="pill ${trip.status === "swept" ? "pill-ok" : "pill-wait"}">${trip.status === "swept" ? "all chains swept" : "sweeping…"}</span></header>
+            <span class="pill ${trip.status === "swept" ? "pill-ok" : "pill-wait"}">${trip.status === "swept" ? "all chains swept" : notFound ? "sweep not found" : "sweeping…"}</span></header>
           <div class="flow">
             <div class="step"><div class="step-h">1 · Origin ${chip(ref.chainId)}</div>
               <div class="step-b">${esc(oText)}</div>
@@ -487,7 +582,19 @@
         </article>`;
       })
       .join("");
-    return `<section class="panel"><h2>Trips <span class="muted small">origin event → Reactive trip → callback sweep on every chain</span></h2>${cards}</section>`;
+    const older = v.trips.filter((t) => S.compact.has(t.tripId)).reverse();
+    const earlier = older.length
+      ? `<details class="earlier"><summary>${older.length} earlier trip${older.length === 1 ? "" : "s"} (Reactive side only)</summary>
+          <table class="tbl"><thead><tr><th>Trip</th><th>Reason</th><th>Origin</th><th>Origin tx</th><th>Reactive</th><th>Sweeps requested</th></tr></thead><tbody>${older
+            .map((t) => {
+              const ref = t.originRef || {};
+              const r = t.reactive || {};
+              return `<tr><td>#${t.tripId}</td><td>${esc(t.reason)}</td><td>${chip(ref.chainId)}</td><td>${txLink(ref.chainId, ref.txHash)}</td>
+                <td><span class="small muted">${esc(clock(r.ts))}</span> ${txLink(r.chainId, r.txHash)}</td><td>${t.requests.map((q) => chip(q.chainId)).join(" ")}</td></tr>`;
+            })
+            .join("")}</tbody></table></details>`
+      : "";
+    return `<section class="panel"><h2>Trips <span class="muted small">origin event → Reactive trip → callback sweep on every chain</span> ${historyNote()}</h2>${cards}${earlier}</section>`;
   }
 
   function originText(o) {
@@ -499,9 +606,10 @@
   }
 
   function renderLatency(v) {
-    if (!v.trips.length) return "";
+    if (!v.trips.some((t) => !S.compact.has(t.tripId))) return "";
     const head = S.chainIds.map((id) => `<th class="num">→ sweep ${chip(id)}</th>`).join("");
     const rows = v.trips
+      .filter((t) => !S.compact.has(t.tripId))
       .map((t) => {
         const cells = S.chainIds
           .map((id) => {

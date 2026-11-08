@@ -469,6 +469,19 @@ try {
 } catch (e) {
   console.error(e);
   failed++;
+}
+
+// The monitor page next door (demo/index.html) in replay mode: no network, the fixture's one trip swept everywhere.
+try {
+  const mp = await browser.newPage();
+  mp.on("pageerror", (e) => errors.push("monitor pageerror: " + e.message));
+  await mp.goto(`${E.E2E_HTTP}/?mock=1&instant=1`);
+  await mp.waitForSelector("article.trip", { timeout: 15000 });
+  const card = await mp.innerText("article.trip");
+  check("monitor replay: the fixture trip renders, swept on every chain", /Trip #1/.test(card) && /all chains swept/.test(card));
+  await mp.close();
+} catch (e) {
+  check("monitor replay renders", false, e.message);
 } finally {
   for (const p of relays) p.kill();
   await browser.close();

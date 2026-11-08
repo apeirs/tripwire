@@ -305,6 +305,19 @@ sweep, with explorer links, block timestamps and the latency between steps. Verd
 tx and log index, and moves merged into a trip are listed on its card. It also shows hot vs vault balances,
 whether each Guardian is still approved, the reactive contract's REACT balance and each Guardian's callback debt.
 
+**Hosted, reading the live mainnet deployment: <https://apeir.dk/online/tripwire/>** (the same files, with
+`config.mainnet.json` as its `config.json`).
+
+On load the page also reads the deployment's history: TripwireReactive's own logs on Reactive since its deploy block
+(`fromBlock` in the config; when that would take more than 40 `eth_getLogs` calls it bisects the `trips()` counter
+over historical state instead), then, for the newest `historyTrips` trips (5; `?history=N`, `0` turns it off), the
+origin receipt and each Guardian's sweep, found from the trip's time on Base and Unichain. So every past trip is
+listed, the newest with their sweeps and latencies, in roughly 60 RPC calls, staggered at three at a time per RPC.
+After that it polls every 4 s. Each `eth_getLogs` range is clamped to the head the same RPC just reported: public
+RPCs are load-balanced, and the node serving the logs can be a block or two behind the one that answered
+`eth_blockNumber` ("block range extends beyond current head block"); the page then reads that many blocks below the
+head and retries on the next poll instead of showing an error.
+
 ```bash
 cd demo && python3 -m http.server 8000
 # mainnet: http://localhost:8000/?net=mainnet   ("tripwire" in demo/config.mainnet.json, or &tripwire=0x…)
@@ -322,7 +335,8 @@ and check the page logic offline:
 
 ```bash
 forge test --mt test_demoTrace -vv --json | node demo/tools/build-fixture.mjs > demo/fixture.json
-node demo/tools/check.mjs   # signatures vs src/, topics and selectors vs cast, decoders, fixture replay
+node demo/tools/check.mjs   # signatures vs src/, topics and selectors vs cast, decoders, fixture replay,
+                            # polling ranges vs lagging RPC nodes, history load on a simulated deployment
 ```
 
 [`demo/STORYBOARD.md`](demo/STORYBOARD.md) is the shot list for the demo video.

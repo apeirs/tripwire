@@ -556,6 +556,242 @@
     return out;
   }
 
+  // ------------------------------------------------------------------ polling ranges
+
+  /**
+   * Recognises the error a load-balanced RPC gives when eth_getLogs (or a block read) reaches a node that is behind
+   * the one that answered eth_blockNumber: "block range extends beyond current head block[: requested N, head M]"
+   * (op-geth behind proxyd, publicnode), "requested toBlock N is not yet available on the node (latestBlock: M, …)"
+   * (Reactive), "header not found", "block not found". Returns { head } (null when the message names no head) or null.
+   */
+  function headError(msg) {
+    const s = String(msg || "");
+    if (!/beyond (the )?current head|not yet available|header not found|block not found|unknown block/i.test(s)) return null;
+    const m = s.match(/\b(?:head|latestBlock):?\s+(\d+)/i);
+    return { head: m ? Number(m[1]) : null };
+  }
+
+  const MAX_HEAD_LAG = 64;
+  /**
+   * How many blocks below the reported head to read from after a 'beyond head' error: exactly as far as the node that
+   * served the logs said it was behind, or double the last lag when it didn't say. Capped, so a node that is
+   * permanently a few blocks behind costs a few seconds of delay, never a stuck poller.
+   */
+  function learnHeadLag(lag, latest, err) {
+    if (err && err.head != null && err.head < latest) return Math.min(MAX_HEAD_LAG, Math.max(lag + 1, latest - err.head));
+    return Math.min(MAX_HEAD_LAG, Math.max(1, lag * 2));
+  }
+
+  /**
+   * The next eth_getLogs range for a poller whose last read block is `cursor`, clamped to the head the same RPC just
+   * reported (minus the learned lag) and to the RPC's range cap. null when there is nothing new to read yet.
+   */
+  function nextRange(cursor, latest, { maxRange = 1000, lag = 0 } = {}) {
+    const head = latest - lag;
+    const from = cursor + 1;
+    if (from > head) return null;
+    return { from, to: Math.min(head, from + maxRange - 1) };
+  }
+
+  /** History on load: scan the reactive contract's logs chunk by chunk when that's cheap, else bisect trips(). */
+  function historyPlan(fromBlock, head, maxRange = 1000, maxChunks = 40) {
+    if (fromBlock == null || fromBlock > head) return { mode: "bisect" };
+    const chunks = Math.ceil((head - fromBlock + 1) / maxRange);
+    if (chunks > maxChunks) return { mode: "bisect", chunks };
+    const ranges = [];
+    for (let f = fromBlock; f <= head; f += maxRange) ranges.push({ from: f, to: Math.min(head, f + maxRange - 1) });
+    return { mode: "scan", ranges };
+  }
+
+  /** Smallest block b in [lo, hi] with pred(b) true (pred is monotonic and true at hi). */
+  async function bisectFirst(lo, hi, pred) {
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (await pred(mid)) hi = mid;
+      else lo = mid + 1;
+    }
+    return hi;
+  }
+
+  /** Runs at most n jobs at once (history load is staggered per RPC so it never floods a public endpoint). */
+  function limiter(n) {
+    let active = 0;
+    const queue = [];
+    const next = () => {
+      if (active >= n || !queue.length) return;
+      active++;
+      const { fn, res, rej } = queue.shift();
+      Promise.resolve()
+        .then(fn)
+        .then(res, rej)
+        .finally(() => {
+          active--;
+          next();
+        });
+    };
+    return (fn) => new Promise((res, rej) => (queue.push({ fn, res, rej }), next()));
+  }
+
+  /**
+   * Loads a deployment's past trips into `monitor`, so the page shows real history, not only the last few minutes.
+   *  1. TripwireReactive's own logs on Reactive: every chunk since `fromBlock` when that's at most `scanChunks`
+   *     eth_getLogs calls, otherwise the block of each of the `recent` newest trips, found by bisecting the trips()
+   *     counter over historical state (about log2(blocks) eth_calls per trip);
+   *  2. for the `recent` newest trips: the Reactive block's time, the origin receipt, and each Guardian's sweep,
+   *     looked up in the destination chain's blocks from 20 s before the trip (block found from the timestamp).
+   * Every RPC goes through a per-chain limiter with one retry; a failed step leaves that trip partly filled, never
+   * throws. Calls `onTrips({ detailed, compact, total })` synchronously right after the Reactive logs are in, and
+   * `onProgress()` as trips fill in. Returns { total, detailed, compact, missing: Set("trip:chain"), calls }.
+   *
+   * o: { rpc(chainId, method, params), ctx, monitor, nets: { [chainId]: { maxRange, blockMs } }, fromBlock,
+   *      recent = 5, scanChunks = 40, concurrency = 3, sweepWindows = 2, originFetched: Set, onTrips, onProgress }
+   */
+  async function loadHistory(o) {
+    const { ctx, monitor } = o;
+    const L = ctx.lasnaChainId;
+    const recent = o.recent ?? 5;
+    const nets = o.nets || {};
+    const out = { total: 0, detailed: [], compact: [], missing: new Set(), calls: 0, mode: null };
+    const lims = {};
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const rpc = (id, method, params) =>
+      (lims[id] ??= limiter(o.concurrency ?? 3))(async () => {
+        for (let attempt = 0; ; attempt++) {
+          out.calls++;
+          try {
+            return await o.rpc(id, method, params);
+          } catch (e) {
+            if (attempt >= 1) throw e;
+            await sleep(o.retryMs ?? 800);
+          }
+        }
+      });
+    const hex = (n) => "0x" + n.toString(16);
+    const range = (id) => (nets[id] || {}).maxRange || 1000;
+    const blockMs = (id) => (nets[id] || {}).blockMs || 1000;
+
+    const times = new Map(); // "chain:block" -> Promise<{ ms, exact } | null>
+    const timeOf = (b) => (b.timestampMs != null ? { ms: toNum(b.timestampMs), exact: true } : { ms: toNum(b.timestamp) * 1000, exact: false });
+    function blockTime(id, n) {
+      const k = id + ":" + n;
+      if (!times.has(k)) times.set(k, rpc(id, "eth_getBlockByNumber", [hex(n), false]).then((b) => (b ? timeOf(b) : null), () => null));
+      return times.get(k);
+    }
+    async function stamp(id, n) {
+      const t = await blockTime(id, n);
+      if (t) monitor.setTimestamp(id, n, t.ms, t.exact);
+      return t;
+    }
+    const heads = {};
+    function headOf(id) {
+      return (heads[id] ??= rpc(id, "eth_getBlockByNumber", ["latest", false]).then((b) => {
+        const t = timeOf(b);
+        times.set(id + ":" + toNum(b.number), Promise.resolve(t));
+        return { n: toNum(b.number), ms: t.ms };
+      }));
+    }
+    /** The block at (or just before) time `target`, from the chain's head and block time, refined on real blocks. */
+    async function blockAt(id, target) {
+      const ref = await headOf(id);
+      const bms = blockMs(id);
+      let b = Math.min(ref.n, Math.max(0, ref.n + Math.round((target - ref.ms) / bms)));
+      for (let i = 0; i < 4; i++) {
+        const t = await blockTime(id, b);
+        if (!t) return b;
+        const d = target - t.ms;
+        if (Math.abs(d) <= Math.max(2 * bms, 2000)) return b;
+        b = Math.min(ref.n, Math.max(0, b + Math.round(d / bms)));
+      }
+      return b;
+    }
+
+    // 1. The reactive contract's logs.
+    const head = toNum(await rpc(L, "eth_blockNumber", []));
+    const tripsAt = async (b) => {
+      const r = await rpc(L, "eth_call", [{ to: ctx.tripwire, data: SELECTOR.trips }, hex(b)]);
+      return r && r !== "0x" ? toNum(r) : 0; // "0x": before the contract existed
+    };
+    out.total = await tripsAt(head);
+    if (!out.total) {
+      if (o.onTrips) o.onTrips(out);
+      return out;
+    }
+    const plan = historyPlan(o.fromBlock, head, range(L), o.scanChunks ?? 40);
+    out.mode = plan.mode;
+    const ingest = (id, logs) => monitor.ingest(logs.map((l) => ({ ...l, chainId: id, blockTimestampMs: null })));
+    if (plan.mode === "scan") {
+      const results = await Promise.all(plan.ranges.map((r) => rpc(L, "eth_getLogs", [{ address: ctx.tripwire, fromBlock: hex(r.from), toBlock: hex(r.to) }])));
+      ingest(L, results.flat());
+    } else {
+      let hi = head;
+      const lo = o.fromBlock ?? 0;
+      for (let k = out.total; k >= Math.max(1, out.total - recent + 1); k--) {
+        const b = await bisectFirst(lo, hi, async (x) => (await tripsAt(x)) >= k);
+        ingest(L, await rpc(L, "eth_getLogs", [{ address: ctx.tripwire, fromBlock: hex(b), toBlock: hex(b) }]));
+        hi = b;
+      }
+    }
+    const trips = monitor.view().trips.filter((t) => t.reactive);
+    const ids = trips.map((t) => t.tripId).sort((a, b) => b - a);
+    out.detailed = ids.slice(0, recent);
+    out.compact = ids.slice(recent);
+    if (o.onTrips) o.onTrips(out); // synchronously after the ingest, before anything else can read the trips
+
+    // 2. The newest trips: Reactive time, origin, sweeps.
+    const T = TOPIC;
+    async function sweepOf(trip, q) {
+      const c = ctx.chains[q.chainId];
+      if (!c || !c.guardian || !nets[q.chainId]) return;
+      const r = await stamp(L, trip.reactive.blockNumber);
+      if (!r) throw new Error("no Reactive block time");
+      const start = await blockAt(q.chainId, r.ms - 20000);
+      const ref = await headOf(q.chainId);
+      const top = ref.n - 8; // below the head: a load-balanced RPC's other nodes may not have the newest blocks
+      for (let w = 0; w < (o.sweepWindows ?? 2); w++) {
+        const from = start + w * range(q.chainId);
+        const to = Math.min(top, from + range(q.chainId) - 1);
+        if (from > to) break;
+        const logs = await rpc(q.chainId, "eth_getLogs", [
+          { address: c.guardian, topics: [[T.Swept, T.Skipped, T.SweepDone, T.Replayed], numTopic(trip.tripId)], fromBlock: hex(from), toBlock: hex(to) },
+        ]);
+        if (!logs.length) continue;
+        ingest(q.chainId, logs);
+        await Promise.all([...new Set(logs.map((l) => toNum(l.blockNumber)))].map((n) => stamp(q.chainId, n)));
+        if (logs.some((l) => norm(l.topics[0]) === T.SweepDone || norm(l.topics[0]) === T.Replayed)) return true;
+      }
+      return false;
+    }
+    async function originOf(trip) {
+      const ref = trip.originRef;
+      if (!ref || !ref.txHash || !nets[ref.chainId]) return;
+      const k = ref.chainId + ":" + ref.txHash;
+      if (o.originFetched) {
+        if (o.originFetched.has(k)) return;
+        o.originFetched.add(k);
+      }
+      const rc = await rpc(ref.chainId, "eth_getTransactionReceipt", [ref.txHash]);
+      if (!rc) return;
+      ingest(ref.chainId, rc.logs);
+      await stamp(ref.chainId, toNum(rc.blockNumber));
+    }
+    await Promise.all(
+      trips
+        .filter((t) => out.detailed.includes(t.tripId))
+        .map(async (trip) => {
+          const jobs = [originOf(trip).catch(() => {})];
+          for (const q of trip.requests)
+            jobs.push(
+              sweepOf(trip, q)
+                .then((found) => found === false && out.missing.add(trip.tripId + ":" + q.chainId))
+                .catch(() => out.missing.add(trip.tripId + ":" + q.chainId)),
+            );
+          await Promise.all(jobs);
+          if (o.onProgress) o.onProgress(out);
+        }),
+    );
+    return out;
+  }
+
   return {
     SIGNATURES,
     TOPIC,
@@ -586,5 +822,13 @@
     decodeLog,
     foldBalances,
     Monitor,
+    MAX_HEAD_LAG,
+    headError,
+    learnHeadLag,
+    nextRange,
+    historyPlan,
+    bisectFirst,
+    limiter,
+    loadHistory,
   };
 });

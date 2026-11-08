@@ -5,7 +5,9 @@
 //  3. the ABI decoders read what `cast abi-encode` writes;
 //  4. demo/fixture.json replays into the expected timeline: one trip from Base, three sweeps, nothing left hot, and a
 //     later approval merged into that trip; every verdict links to its origin log by (chain, tx, log index);
-//  5. tools/measure.mjs: percentiles, CSV quoting and the latency table, on that fixture trip.
+//  5. tools/measure.mjs: percentiles, CSV quoting and the latency table, on that fixture trip;
+//  6. the live poller's log ranges stay at or below the RPC's reported head and recover from 'beyond head' races;
+//  7. the history load finds past trips (scan and bisect), their origins and sweeps, on a simulated three-chain RPC.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -218,6 +220,207 @@ eq(JSON.stringify(M.parseCsv('a,"b,c",d\n1,"say ""hi""",3\n')), JSON.stringify([
   const st = sm.view().trips.find((x) => x.tripId === 1);
   eq(Object.keys((st || {}).sweeps || {}).sort().join(","), "130,8453", "same Guardian address on two chains: one sweep per chain");
   eq(st && st.sweeps[8453].txHash, "0x0a", "a foreign Guardian's SweepDone is ignored");
+}
+
+// 6. live poller: ranges clamped to the RPC's own head, 'beyond head' races retried --------------------------------
+{
+  const he = C.headError("eth_getLogs: block range extends beyond current head block");
+  ok(he && he.head === null, "headError: op-geth/proxyd message without a head");
+  eq(C.headError("eth_getLogs: block range extends beyond current head block: requested 54709729, head 54709728").head, 54709728, "headError: publicnode names the head");
+  eq(C.headError("block not available: block not found for eth_getLogs, requested toBlock 8554848 is not yet available on the node (latestBlock: 8554416, finalizedBlock: 8554415)").head, 8554416, "headError: Reactive names latestBlock");
+  eq(C.headError("eth_getLogs: timeout"), null, "headError: a timeout is not a head race");
+  eq(C.headError("429 Too Many Requests"), null, "headError: rate limit is not a head race");
+  eq(JSON.stringify(C.nextRange(100, 200, { maxRange: 50 })), JSON.stringify({ from: 101, to: 150 }), "nextRange caps at maxRange");
+  eq(JSON.stringify(C.nextRange(180, 200, { maxRange: 50, lag: 3 })), JSON.stringify({ from: 181, to: 197 }), "nextRange clamps to head minus lag");
+  eq(C.nextRange(197, 200, { lag: 3 }), null, "nextRange: nothing new below the clamped head");
+  eq(C.nextRange(210, 200, {}), null, "nextRange: a head behind the cursor reads nothing");
+  eq(C.learnHeadLag(0, 1000, { head: 997 }), 3, "learnHeadLag: as far back as the node said");
+  eq(C.learnHeadLag(5, 1000, { head: 999 }), 6, "learnHeadLag: at least one more than before");
+  eq(C.learnHeadLag(0, 1000, { head: null }), 1, "learnHeadLag: unknown head starts at 1");
+  eq(C.learnHeadLag(4, 1000, { head: null }), 8, "learnHeadLag: unknown head doubles");
+  eq(C.learnHeadLag(60, 1000, { head: null }), C.MAX_HEAD_LAG, "learnHeadLag is capped");
+
+  // A load balancer whose eth_getLogs node is always 2 blocks behind the eth_blockNumber node (the Unichain RPC seen
+  // from the hosted page): the poller's loop from app.js, on core's helpers. One refused range, then no errors, and
+  // the cursor keeps up with the logs node's head.
+  for (const named of [false, true]) {
+    let head = 5000;
+    let errors = 0;
+    let lag = 0;
+    let cursor = head - 600;
+    const getLogs = (from, to) => {
+      if (to > head - 2) throw new Error(`eth_getLogs: block range extends beyond current head block${named ? `: requested ${to}, head ${head - 2}` : ""}`);
+      return [];
+    };
+    for (let poll = 0; poll < 20; poll++) {
+      head += 4;
+      const latest = head;
+      let r;
+      while ((r = C.nextRange(cursor, latest, { maxRange: 1000, lag }))) {
+        try {
+          getLogs(r.from, r.to);
+        } catch (e) {
+          errors++;
+          lag = C.learnHeadLag(lag, latest, C.headError(e.message));
+          break;
+        }
+        cursor = r.to;
+      }
+    }
+    ok(errors <= 2, `lagging logs node${named ? " (head named)" : ""}: ${errors} refused range(s), then none`);
+    eq(cursor, head - 2, `lagging logs node${named ? " (head named)" : ""}: cursor at the logs node's head`);
+  }
+}
+
+// 7. history on load: past trips from TripwireReactive's logs, sweeps found by time on each chain -------------------
+{
+  const pad = (v) => (typeof v === "string" ? v.replace(/^0x/, "").toLowerCase().padStart(64, "0") : BigInt(v).toString(16).padStart(64, "0"));
+  const data = (...w) => "0x" + w.map(pad).join("");
+  const hex = (n) => "0x" + n.toString(16);
+  const NOW = 1_800_000_000_000;
+  const L = 1597;
+  const chainsDef = {
+    [L]: { head: 20000, ms: 1000, exactTs: false },
+    8453: { head: 1_000_000, ms: 200, exactTs: true },
+    130: { head: 500_000, ms: 1000, exactTs: false },
+  };
+  const tsOf = (id, b) => NOW - (chainsDef[id].head - b) * chainsDef[id].ms;
+  const blockOf = (id, ms) => chainsDef[id].head - Math.round((NOW - ms) / chainsDef[id].ms);
+  const A = (n) => "0x" + n.toString(16).padStart(40, "0");
+  const TRIPWIRE = A(0x7e1), HOT = A(0x401), COLD = A(0xc01), ATT = A(0xa77), G_BASE = A(0x6b), G_UNI = A(0x6c), TOK = A(0x70c);
+  const DEPLOY = 5000;
+  const logs = { [L]: [], 8453: [], 130: [] };
+  const receipts = {};
+  const tripBlocks = [];
+  let txn = 0;
+  const tx = () => "0x" + (++txn).toString(16).padStart(64, "0");
+  for (let i = 1; i <= 8; i++) {
+    const rb = 6000 + 1500 * (i - 1);
+    tripBlocks.push(rb);
+    const oc = i % 2 ? 130 : 8453;
+    const ob = blockOf(oc, tsOf(L, rb) - 1000);
+    const otx = tx();
+    const o = { address: TOK, topics: [C.TOPIC.Transfer, C.addrTopic(HOT), C.addrTopic(ATT)], data: data(5_000_000), transactionHash: otx, logIndex: "0x0", blockNumber: hex(ob) };
+    logs[oc].push(o);
+    receipts[otx] = { blockNumber: hex(ob), logs: [o] };
+    const rtx = tx();
+    const rl = (topics, d, li) => ({ address: TRIPWIRE, topics, data: d, transactionHash: rtx, logIndex: hex(li), blockNumber: hex(rb) });
+    logs[L].push(
+      rl([C.TOPIC.Observed, C.numTopic(oc), C.TOPIC.Transfer, C.addrTopic(ATT)], data(5_000_000, 3, otx, 0), 0),
+      rl([C.TOPIC.Tripped, C.numTopic(i), C.numTopic(0), C.numTopic(oc)], data(otx, 0), 1),
+      rl([C.TOPIC.SweepRequested, C.numTopic(i), C.numTopic(8453)], data(G_BASE, 1), 2),
+      rl([C.TOPIC.SweepRequested, C.numTopic(i), C.numTopic(130)], data(G_UNI, 1), 3),
+    );
+    for (const [id, g, after] of [[8453, G_BASE, 1600], [130, G_UNI, 2000]]) {
+      if (i === 8 && id === 130) continue; // this callback never landed: the page must say so, not wait forever
+      const sb = blockOf(id, tsOf(L, rb) + after);
+      const stx = tx();
+      logs[id].push(
+        { address: g, topics: [C.TOPIC.Swept, C.numTopic(i), C.addrTopic(TOK)], data: data(5_000_000), transactionHash: stx, logIndex: "0x0", blockNumber: hex(sb) },
+        { address: g, topics: [C.TOPIC.SweepDone, C.numTopic(i)], data: data(1, 0, 0), transactionHash: stx, logIndex: "0x1", blockNumber: hex(sb) },
+      );
+    }
+  }
+  const stats = { getLogs: 0, beyondHead: 0, overRange: 0 };
+  const topicOk = (want, have) => want == null || (Array.isArray(want) ? want.map((x) => x.toLowerCase()).includes(have) : want.toLowerCase() === have);
+  async function fakeRpc(id, method, params) {
+    const def = chainsDef[id];
+    if (!def) throw new Error("no chain " + id);
+    switch (method) {
+      case "eth_blockNumber":
+        return hex(def.head);
+      case "eth_getBlockByNumber": {
+        const n = params[0] === "latest" ? def.head : parseInt(params[0], 16);
+        if (n > def.head) return null;
+        const ms = tsOf(id, n);
+        return { number: hex(n), timestamp: hex(Math.floor(ms / 1000)), ...(def.exactTs ? { timestampMs: hex(ms) } : {}) };
+      }
+      case "eth_call": {
+        const b = parseInt(params[1], 16);
+        if (params[0].data !== C.SELECTOR.trips) throw new Error("unexpected call");
+        return b < DEPLOY ? "0x" : data(tripBlocks.filter((x) => x <= b).length);
+      }
+      case "eth_getLogs": {
+        stats.getLogs++;
+        const f = params[0];
+        const from = parseInt(f.fromBlock, 16), to = parseInt(f.toBlock, 16);
+        if (to > def.head) {
+          stats.beyondHead++;
+          throw new Error("block range extends beyond current head block");
+        }
+        if (to - from + 1 > 1000) {
+          stats.overRange++;
+          throw new Error("block range too large");
+        }
+        const addrs = [f.address].flat().map((a) => a.toLowerCase());
+        return logs[id].filter((l) => {
+          const b = parseInt(l.blockNumber, 16);
+          return b >= from && b <= to && addrs.includes(l.address) && (f.topics || []).every((want, k) => topicOk(want, l.topics[k]));
+        });
+      }
+      case "eth_getTransactionReceipt":
+        return receipts[params[0]] || null;
+      default:
+        throw new Error("unexpected " + method);
+    }
+  }
+  const hctx = C.makeContext({
+    lasnaChainId: L,
+    tripwire: TRIPWIRE,
+    hot: HOT,
+    cold: COLD,
+    cosigner: HOT,
+    chains: { 8453: { guardian: G_BASE, tokens: [{ address: TOK, symbol: "TDT", decimals: 6 }] }, 130: { guardian: G_UNI, tokens: [{ address: TOK, symbol: "TDT", decimals: 6 }] } },
+  });
+  const hnets = { [L]: { maxRange: 1000, blockMs: 786 }, 8453: { maxRange: 1000, blockMs: 200 }, 130: { maxRange: 1000, blockMs: 1000 } };
+
+  // Scan mode: 15 chunks since the deploy block.
+  const hm = new C.Monitor(hctx);
+  let onTripsAt = null;
+  const h = await C.loadHistory({ rpc: fakeRpc, ctx: hctx, monitor: hm, nets: hnets, fromBlock: DEPLOY, recent: 5, retryMs: 1, onTrips: (x) => (onTripsAt = x.compact.slice()) });
+  eq(h.mode, "scan", "history: scans the reactive contract's logs since fromBlock when that's cheap");
+  eq(h.total, 8, "history: trips() count");
+  eq(h.detailed.join(","), "8,7,6,5,4", "history: the 5 newest trips get sweeps");
+  eq(h.compact.join(","), "3,2,1", "history: older trips listed without sweeps");
+  eq((onTripsAt || []).join(","), "3,2,1", "history: onTrips reports the compact set before sweeps load");
+  const hv = hm.view();
+  eq(hv.trips.length, 8, "history: every past trip is in the monitor");
+  for (const id of [4, 5, 6, 7]) {
+    const t = hv.trips.find((x) => x.tripId === id);
+    ok(t && t.status === "swept" && Object.keys(t.sweeps).sort().join(",") === "130,8453", `history: trip #${id} swept on Base and Unichain`);
+    ok(t && t.origin && t.origin.name === "Transfer", `history: trip #${id} origin receipt linked`);
+    ok(t && t.latency.allSwept >= 2000 && t.latency.allSwept <= 4000, `history: trip #${id} end-to-end latency from block times (${t && t.latency.allSwept} ms)`);
+    ok(t && t.latency.sweeps[8453].fromOrigin > 0 && t.latency.toReactive != null, `history: trip #${id} per-step latencies`);
+  }
+  const t8 = hv.trips.find((x) => x.tripId === 8);
+  ok(t8.sweeps[8453] && !t8.sweeps[130] && t8.status === "sweeping", "history: trip #8 has its Base sweep, not its Unichain one");
+  eq([...h.missing].join(","), "8:130", "history: only the callback that never landed is reported missing");
+  ok(!hv.trips.find((x) => x.tripId === 1).origin, "history: no receipts fetched for compact trips");
+  eq(stats.beyondHead + stats.overRange, 0, "history: no range past a head or over maxRange");
+  ok(h.calls <= 120, `history (scan): bounded RPC calls (${h.calls})`);
+
+  // Bisect mode: too many chunks to scan, so the newest trips are found by bisecting trips() over historical state.
+  for (const fromBlock of [DEPLOY, null]) {
+    const bm = new C.Monitor(hctx);
+    const b = await C.loadHistory({ rpc: fakeRpc, ctx: hctx, monitor: bm, nets: hnets, fromBlock, recent: 5, scanChunks: 3, retryMs: 1 });
+    const bv = bm.view();
+    const label = `history (bisect, fromBlock ${fromBlock})`;
+    eq(b.mode, "bisect", `${label}: mode`);
+    eq(bv.trips.map((x) => x.tripId).join(","), "4,5,6,7,8", `${label}: exactly the 5 newest trips`);
+    ok(bv.trips.filter((x) => x.status === "swept").length === 4, `${label}: their sweeps found`);
+    ok(b.calls <= 250, `${label}: bounded RPC calls (${b.calls})`);
+  }
+  eq(stats.beyondHead + stats.overRange, 0, "history (bisect): no range past a head or over maxRange");
+
+  // A dead RPC: history fails quietly (the page keeps polling live), it never throws past loadHistory's caller.
+  const dm = new C.Monitor(hctx);
+  let threw = null;
+  await C.loadHistory({ rpc: async () => { throw new Error("fetch failed"); }, ctx: hctx, monitor: dm, nets: hnets, fromBlock: DEPLOY, retryMs: 1 }).catch((e) => (threw = e));
+  ok(threw && /fetch failed/.test(threw.message), "history: an unreachable Reactive RPC rejects once (the page shows a note)");
+
+  // The mainnet config names the deploy block, so the hosted page scans instead of bisecting.
+  const mcfg = JSON.parse(readFileSync(join(demo, "config.mainnet.json"), "utf8"));
+  ok(Number.isInteger(mcfg.fromBlock) && mcfg.fromBlock > 0, "config.mainnet.json has the deploy block as fromBlock");
 }
 
 console.log(`${passed} checks passed${failed ? `, ${failed} FAILED` : ""}`);
