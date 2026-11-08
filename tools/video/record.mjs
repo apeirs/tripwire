@@ -10,6 +10,8 @@ import { createServer } from "node:http";
 import { readFileSync, existsSync, mkdirSync, renameSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { join, extname, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+const PW_CACHE = process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(), ".cache", "ms-playwright");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const demoDir = resolve(here, "../../demo");
@@ -24,13 +26,13 @@ const timeoutS = Number(opt("--timeout", live ? "900" : "180"));
 const query = opt("--query", live ? (flag("--mainnet") ? "?net=mainnet&lookback=5" : "?lookback=5") : `?mock=1&speed=${speed}`);
 
 function loadPlaywright() {
-  const cands = [process.env.PLAYWRIGHT_DIR, "playwright", "/home/a/apeir-online/browser/node_modules/playwright"].filter(Boolean);
+  const cands = [process.env.PLAYWRIGHT_DIR, "playwright"].filter(Boolean);
   const req = createRequire(import.meta.url);
   for (const c of cands) { try { return req(c); } catch {} }
   throw new Error("Playwright not found; set PLAYWRIGHT_DIR to its node_modules/playwright path");
 }
 const { chromium } = loadPlaywright();
-const exe = [process.env.CHROMIUM, ...readdirSafe("/home/a/.cache/ms-playwright").filter((d) => d.startsWith("chromium-")).map((d) => `/home/a/.cache/ms-playwright/${d}/chrome-linux/chrome`)].find((p) => p && existsSync(p));
+const exe = [process.env.CHROMIUM, ...readdirSafe(PW_CACHE).filter((d) => d.startsWith("chromium-")).map((d) => join(PW_CACHE, d, "chrome-linux", "chrome"))].find((p) => p && existsSync(p));
 function readdirSafe(d) { try { return readdirSync(d); } catch { return []; } }
 
 // Static server for demo/ on localhost only.

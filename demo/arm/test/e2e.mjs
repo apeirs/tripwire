@@ -21,7 +21,7 @@ const MAXU = (1n << 256n) - 1n;
 
 function loadPlaywright() {
   const req = createRequire(import.meta.url);
-  for (const c of [E.PLAYWRIGHT_DIR, "playwright", "/home/a/apeir-online/browser/node_modules/playwright"].filter(Boolean)) {
+  for (const c of [E.PLAYWRIGHT_DIR, "playwright"].filter(Boolean)) {
     try {
       return req(c);
     } catch {}
@@ -217,15 +217,23 @@ try {
     const external = [];
     p.on("request", (r) => { const u = r.url(); if (!u.startsWith(E.E2E_HTTP) && !u.startsWith("https://cdn.jsdelivr.net/npm/")) external.push(u); });
     p.on("pageerror", (e) => errors.push("pageerror: " + e.message));
-    for (const net of ["testnet", "mainnet"]) {
-      await p.goto(`${E.E2E_HTTP}/arm/?net=${net}`);
-      await p.waitForSelector("#wizard");
-      const txt = await p.textContent("#main");
-      check(`${net} config: "No Tripwire deployed yet" state`, /No Tripwire deployed yet/.test(txt));
-      if (net === "mainnet") check("mainnet: real-funds pill in the header", /Mainnet/.test(await p.textContent("#header")));
-      await shot(p, `00-${net}-not-deployed`);
-    }
+    await p.goto(`${E.E2E_HTTP}/arm/?net=testnet`);
+    await p.waitForSelector("#wizard");
+    check(`testnet config: "No Tripwire deployed yet" state`, /No Tripwire deployed yet/.test(await p.textContent("#main")));
+    await shot(p, `00-testnet-not-deployed`);
     check("not-deployed state reads no chain (only the page and the viem CDN)", external.length === 0, external.join(" "));
+    await ctx.close();
+  }
+  // ---------------------------------------------------------------- 0b. mainnet config = the live deployment (RPC blocked here)
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: "dark" });
+    await ctx.route("**/*", (r) => { const u = r.request().url(); return u.startsWith(E.E2E_HTTP) || u.startsWith("https://cdn.jsdelivr.net/npm/") ? r.continue() : r.abort(); });
+    const p = await ctx.newPage();
+    p.on("pageerror", (e) => errors.push("pageerror: " + e.message));
+    await p.goto(`${E.E2E_HTTP}/arm/?net=mainnet`);
+    await p.waitForSelector("#main section");
+    check("mainnet: real-funds pill in the header", /Mainnet/.test(await p.textContent("#header")));
+    check("mainnet config: points at the deployed Tripwire (no set-up wizard)", (await p.$("#wizard")) === null);
     await ctx.close();
   }
 
