@@ -1,0 +1,56 @@
+{
+  "_help": "Live mode needs only `tripwire` (TripwireReactive on Lasna): HOT, COLD, the cosigner, chains, Guardians and tokens are read from it. `fallback` is used only if that read fails. URL params override: ?tripwire=0x..&lookback=10&poll=4000&config=other.json. ?mock=1 replays fixture.json instead.",
+  "lasnaChainId": 5318007,
+  "tripwire": "",
+  "lookbackMinutes": 10,
+  "pollMs": 4000,
+  "balanceEveryMs": 8000,
+  "labels": {},
+  "fallback": {
+    "hot": "",
+    "cold": "",
+    "cosigner": "",
+    "chains": {}
+  },
+  "networks": {
+    "5318007": {
+      "name": "Reactive Lasna",
+      "short": "Lasna",
+      "rpc": "https://lasna-rpc.rnk.dev/",
+      "explorer": "https://lasna.reactscan.net",
+      "blockMs": 1065,
+      "maxRange": 1000,
+      "color": "#2bd4a4"
+    },
+    "84532": {
+      "name": "Base Sepolia",
+      "short": "Base",
+      "rpc": "https://sepolia.base.org",
+      "explorer": "https://sepolia.basescan.org",
+      "callbackProxy": "0x476F44b11F5C942c58f4c8E3d0300E5710743585",
+      "blockMs": 200,
+      "maxRange": 200,
+      "color": "#4c8dff"
+    },
+    "11155111": {
+      "name": "Ethereum Sepolia",
+      "short": "Ethereum",
+      "rpc": "https://ethereum-sepolia-rpc.publicnode.com",
+      "explorer": "https://sepolia.etherscan.io",
+      "callbackProxy": "0xAa14d9Cd0f788Ca23d11805986C1d8bd035D23b4",
+      "blockMs": 12000,
+      "maxRange": 1000,
+      "color": "#a6a9ff"
+    },
+    "1301": {
+      "name": "Unichain Sepolia",
+      "short": "Unichain",
+      "rpc": "https://sepolia.unichain.org",
+      "explorer": "https://sepolia.uniscan.xyz",
+      "callbackProxy": "0x775c9B990ADe401060B78D0e98684eEf8d2466C1",
+      "blockMs": 1000,
+      "maxRange": 1000,
+      "color": "#f05bd0"
+    }
+  }
+}

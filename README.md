@@ -2,19 +2,20 @@
 
 **One stolen key shouldn't cost you every chain.**
 
-Tripwire watches a hot wallet's tokens on Base, Ethereum and Unichain (Sepolia for now). The first outgoing transfer or
-approval you didn't pre-clear trips it, and a Reactive Network contract sweeps every approved token on **all three
-chains** to your own cold address. The contract that moves your tokens can pay exactly one address, yours, and only
-when the call comes from your own reactive contract.
+Tripwire guards a hot wallet's ERC-20s on Base, Ethereum and Unichain (Sepolia for now). When an outgoing transfer
+or approval leaves the wallet that isn't to a trusted address, isn't under your threshold and wasn't pre-cleared,
+a reactive contract on Reactive Network trips and asks a Guardian on **each of the three chains** to move every
+approved token to your cold address. A Guardian can pay exactly one address, yours, and only on a callback from
+your own reactive contract.
 
 Built for the Reactive Omni Buildathon, track *Set It and Forget It*.
 
 ## The problem
 
-A drained wallet rarely loses everything in one transaction. Drainer kits pull token after token with an approval the
-victim signed, and key sweepers empty one chain, then the next. Between the first loss and the last there are seconds
-to minutes, and nobody is watching. Tripwire is the thing watching: it reacts to the first bad move and gets
-everything else out of reach.
+A drained wallet rarely loses everything in one transaction. Drainer kits pull token after token with an approval
+the victim signed, and key sweepers empty one chain, then the next. Between the first loss and the last there are
+seconds to minutes, and nobody is watching. Tripwire watches: it reacts to the first move it can't explain and puts
+everything else out of reach, on every chain at once.
 
 ## How it works
 
@@ -44,56 +45,58 @@ everything else out of reach.
 ```
 
 1. **Origin.** `TripwireReactive` subscribes, per chain and per registered token, to `Transfer` and `Approval` with
-   `topic1 = HOT`; to `Intend` from the chain's `Intent` contract with `topic1 = cosigner`; and to `Panic` from the
-   chain's `PanicButton` with `topic1 = HOT` or the cosigner. Nothing else reaches it, so nobody can make it pay for
-   spam events.
-2. **Reactive.** `react()` (system contract only) decides per log:
+   `topic1 = HOT`; to `Intend` from that chain's `Intent` contract with `topic1 = cosigner`; and to `Panic` from that
+   chain's `PanicButton` with `topic1 = HOT` or the cosigner. No other log reaches it, so strangers can't make it
+   spend gas.
+2. **Reactive.** `react()` (callable only by the system contract) decides per log, in this order:
 
    | Log | Clears when | Trips when |
    |---|---|---|
-   | `Transfer(HOT → to)` | `to` is COLD or trusted; amount ≤ token threshold; a live cosigner intent covers it | anything else |
-   | `Approval(HOT, spender)` | spender trusted; value 0; ≤ threshold; covered by an intent | anything else, e.g. a phishing approval |
-   | `Approval(HOT, Guardian)` | value ≥ 2^128 | below it: the guard is being revoked |
-   | `Panic(caller)` | | caller is HOT or the cosigner |
-   | `Intend(cosigner, token, to, amount, expiry)` | stores an intent (max 1 day) | |
+   | `Approval(HOT, Guardian)` | value ≥ 2^128 | value below that: someone is revoking the guard |
+   | `Transfer(HOT → to)` | `to` is COLD or trusted; or amount ≤ the token's threshold; or a live cosigner intent covers it | anything else |
+   | `Approval(HOT → spender)` | spender is COLD or trusted; or value is 0; or ≤ threshold; or covered by an intent | anything else, e.g. a phishing approval |
+   | `Panic(caller)` | never | caller is HOT or the cosigner |
+   | `Intend(cosigner, token, to, amount, expiry)` | stores an intent for that chain, token and recipient (at most 1 day; used up as transfers arrive) | never |
 
-   Every log is handled once (key = chain id, tx hash, log index), and one origin transaction trips at most once, so
-   a multicall drain costs one trip, not ten.
-3. **Destination.** On a trip, every configured chain gets a callback to `Guardian.sweep(tripId, tokens)`. For each
-   token the Guardian moves `min(balanceOf(HOT), allowance(HOT, Guardian))` from HOT to COLD and emits
-   `Swept(tripId, token, amount)`. A token that reverts, burns gas, returns false or isn't a contract is skipped; the
-   rest still move.
+   Each log is handled once (key = chain id, tx hash, log index), and consecutive logs from one origin transaction
+   trip once, so a multicall that moves three tokens costs one trip. Every decision is logged as
+   `Observed(chain, topic0, counterparty, amount, verdict)`; a trip also emits `Tripped(tripId, reason, chain, tx,
+   logIndex)` and one `SweepRequested` per chain.
+3. **Destination.** On a trip, each chain with a Guardian and at least one token gets a callback to
+   `Guardian.sweep(tripId, tokens)`. For each token the Guardian moves `min(balanceOf(HOT), allowance(HOT, Guardian))`
+   from HOT to COLD and emits `Swept`. A token that reverts, burns gas, returns false or isn't a contract is skipped
+   (`Skipped` with the reason); the rest still move. A trip id is handled once per Guardian.
 
 The sweep's own `Transfer(HOT → COLD)` logs come back to `react()` and clear (COLD is always trusted), so the loop
-settles by itself. That path is tested.
+settles by itself. That path is tested, including tokens that emit a fresh `Approval` when an allowance is spent.
 
 ## Contracts
 
 | Contract | Chain | What it does |
 |---|---|---|
 | [`TripwireReactive`](src/TripwireReactive.sol) | Reactive (Lasna) | Subscriptions, rules, intents, dedupe, callback requests |
-| [`Guardian`](src/Guardian.sol) | each destination | `sweep()`: HOT → COLD only; proxy + Tripwire id only; replay-safe |
-| [`Intent`](src/Intent.sol) | each origin | `intend(token, to, amount, expiry)`: pre-clears one legit payment |
-| [`PanicButton`](src/PanicButton.sol) | any watched chain | `panic()`: sweep everything now |
-| [`MockERC20`](src/mocks/MockERC20.sol), [`Drainer`](src/mocks/Drainer.sol) | origin, demo only | test tokens and a demo approval drainer |
+| [`Guardian`](src/Guardian.sol) | each protected chain | `sweep()`: HOT → COLD only; callback proxy + Tripwire's address only; replay-safe |
+| [`Intent`](src/Intent.sol) | each origin chain | `intend()` / `intendFor()`: pre-clears one payment or approval, max 1 day |
+| [`PanicButton`](src/PanicButton.sol) | each origin chain | `panic()`: sweep everything now |
+| [`MockERC20`](src/mocks/MockERC20.sol), [`Drainer`](src/mocks/Drainer.sol) | origin, demo only | test tokens and an approval drainer for the demo |
 
 ## Safety properties (and the tests that hold them)
 
-`forge test`: **54 tests** (38 unit and scenario, 11 fuzz at 512 runs each, 5 invariants at 128 runs × 64 calls).
+`forge test`: **55 tests** (39 unit and scenario, 11 fuzz at 512 runs each, 5 invariants at 128 runs × 64 calls).
 
 - **Only COLD ever receives.** `COLD` is immutable and is the only recipient in the code. Fuzzed over random
   hot/cold/amounts (`testFuzz_onlyColdEverReceives`) and held as an invariant across random drains, approvals,
   intents, panics, replays and forged calls (`invariant_guardianOnlyPaysCold`, `invariant_coldIsExplained`).
-- **Only the proxy carrying Tripwire's id can sweep.** `onlyServiceProvider` (caller is the callback proxy) plus
-  `onlyCallbackSender` (the network-injected first argument is our reactive contract). Fuzzed for any direct caller and
-  any other reactive sender; invariant `invariant_noForgedSweep`.
+- **Only the proxy, on behalf of our reactive contract, can sweep.** `onlyServiceProvider` (caller is the callback
+  proxy) plus `onlyCallbackSender` (the network-injected first argument is our reactive contract). Fuzzed for any
+  direct caller and any other reactive sender; invariant `invariant_noForgedSweep`.
 - **Replays are no-ops.** Each trip id is handled once; a second trip on the same state moves nothing
   (`test_replay_isNoOpEvenWithNewFunds`, `invariant_replayIsNoOp`).
-- **Intents expire and are used up.** `testFuzz_intent_expiryHonoured`, `testFuzz_intent_amountCap`, and intents only
-  count from the cosigner, on their own chain, token and recipient.
+- **Intents expire and are used up.** `testFuzz_intent_expiryHonoured`, `testFuzz_intent_amountCap`; intents count
+  only from the cosigner, on their own chain, token and recipient.
 - **Allowlist and thresholds.** `testFuzz_threshold`, `test_transfer_toCold_orTrusted_neverTrips`,
   `test_approval_rules`.
-- **Dedupe.** Same log twice trips once; same tx with three Transfer logs trips once
+- **Dedupe.** The same log twice trips once; one tx with three Transfer logs trips once
   (`test_dedupe_*`, `test_coalesce_oneTripPerOriginTx`).
 - **Hostile tokens can't block a sweep**: no-return (USDT-style), false-return, reverting, gas-burning and
   return-bomb tokens, re-entrancy (`test_weirdTokens_skippedOthersStillSwept`, `test_reentrancy_cannotSweepAgain`).
@@ -101,9 +104,10 @@ settles by itself. That path is tested.
   attempted with 330k left, so a short gas limit skips the tail instead of reverting what already moved
   (`test_lowGas_skipsTailButNeverRevertsMovedTokens`).
 
-The loop itself is simulated in-process (`test/utils/OmniSim.sol`): recorded origin logs are matched against the
-recorded subscriptions, delivered to `react()` as the system contract, and the requested callbacks are delivered
-through a mock proxy that injects the sender and holds back gas the way the real one does.
+The loop is simulated in-process (`test/utils/OmniSim.sol`): recorded origin logs are matched against the recorded
+subscriptions, delivered to `react()` as the system contract, and the requested callbacks are delivered through a
+mock proxy that injects the sender and holds back gas the way the real one does. `test/Loop.t.sol` runs the four demo
+scenarios end to end; `test/DemoTrace.t.sol` runs the demo story and prints its raw logs for the demo page.
 
 ## Gas and cost (measured in tests; live numbers go in the tables below)
 
@@ -120,46 +124,51 @@ through a mock proxy that injects the sender and holds back gas the way the real
 
 **Defends against:** approval drainers that pull token by token; key sweepers that move asset by asset or chain by
 chain; a thief revoking the Guardian's approval first (the revoke trips); fake events (only subscribed contracts and
-topics are delivered); forged or replayed callbacks.
+topics are delivered, so a look-alike token can't reach it); forged or replayed callbacks.
 
 **Does not defend against, and says so:**
 
-- **The first move lands.** Tripwire reacts to an on-chain event, so the transfer that trips it has already happened.
-  A one-transaction multicall drain with the stolen key takes everything it touches in that one transaction before any
-  reaction exists. Tripwire limits the damage to that first transaction and saves everything else, on every chain.
+- **The first move lands.** Tripwire reacts to an included log, so the transfer that trips it has already happened.
+  A one-transaction multicall drain with the stolen key takes everything it touches in that transaction before any
+  reaction exists. Tripwire limits the loss to that transaction and saves everything else, on every chain.
 - **Phishing approvals are caught before the pull, permits are not.** An `approve()` to an unknown spender trips
-  Tripwire before the drainer's pull lands, if the pull comes in a later block. A signed `permit` used in the same
+  Tripwire before the drainer pulls, if the pull comes in a later transaction. A signed `permit` used in the same
   transaction as the pull is the case above.
-- **Reaction time is a race.** The sweep lands about one Reactive block plus one destination block after the origin
-  event. A drainer pulling the next token in the very next block may still win that token. Latency numbers are in the
-  table below.
-- **Only approved ERC-20s.** Native ETH emits no log and can't be pulled by a contract; NFTs are out of scope for now.
-  A token you didn't register and approve isn't watched or swept.
+- **Reaction time is a race.** A sweep lands after the origin block, a Reactive block and a destination block. A
+  drainer pulling the next token in the very next block may still win that token. Measured numbers are in the
+  latency table below.
+- **Only approved ERC-20s.** Native ETH emits no log and a contract can't pull it; NFTs are out of scope for now. A
+  token you didn't register and approve isn't watched or swept.
 - **The cosigner matters.** Intents and panic come from the cosigner. If the cosigner is the hot key itself, a thief
-  can pre-clear their own transfer. Use a second key (a phone wallet) for real protection.
-- **False positives cost a trip home.** A payment you forgot to pre-clear moves everything to COLD. That is the
-  failure mode by design: safe, a little annoying.
-- **Funding.** A reactive contract or Guardian in debt goes silent. Keep both funded (`depositTo`), and watch them.
+  can pre-clear their own transfer. Use a second key (a phone wallet).
+- **False positives send everything home.** A payment you forgot to pre-clear moves all approved tokens to COLD:
+  safe, a little annoying. Pre-clear the address that actually *receives* the tokens: a DEX swap usually moves them
+  from HOT to a pool, not to the router you approved, so trust that pool or pre-clear it too.
+- **Each untrusted transaction is its own trip.** Three phishing approvals in three transactions are three trips,
+  each with a callback on every chain; the later ones sweep nothing but still cost gas. A thief holding the key can
+  burn the reserves this way, after everything has already been swept.
+- **Funding.** A reactive contract or Guardian in debt goes silent. Keep both funded (`depositTo`) and watch them
+  (the demo page shows the reactive balance and each Guardian's callback debt).
 - **Owner of the reactive contract** can change tokens, thresholds, trusted addresses and Guardians on Reactive
   Network. It can't redirect funds: every Guardian pays only COLD. Keep that key off the hot wallet too.
 
 ## Why Reactive and not a keeper bot
 
-Honestly: a well-run bot with its own RPC nodes can do the same job. What Reactive changes is who has to keep it
-running and who holds power:
+A well-run bot with its own RPC nodes can do the same job. What Reactive changes is who keeps it running and who
+holds power:
 
-- **No server, no keeper key.** A bot needs a machine that never sleeps, RPC endpoints for three chains, and a hot key
-  with gas on each chain. Tripwire is three contracts and two deposits; nothing of yours runs off-chain.
+- **No server, no keeper key.** A bot needs a machine that never sleeps, RPC endpoints for three chains, and a hot
+  key with gas on each chain. Tripwire is contracts and deposits; nothing of yours runs off-chain.
 - **The trigger is on-chain and auditable.** The rules are in `react()`, and anyone can read why a sweep happened
-  from the `Tripped` and `Observed` events.
-- **Cross-chain fan-out is one call per chain** from the same reaction: a trip on Unichain sweeps Base and Ethereum
-  too, without a bot watching three mempools.
+  from the `Observed` and `Tripped` events.
+- **Cross-chain fan-out is one callback per chain** from the same reaction: a trip on Unichain sweeps Base and
+  Ethereum too, without a bot watching three chains.
 - **What a bot does better:** it can watch the mempool and front-run a pending drain, which Tripwire can't (it reacts
   to included logs). For high-value wallets, use both.
 
 ## Deploy
 
-Needs Foundry, one deployer key with Sepolia ETH and lREACT, the HOT key (only to approve the Guardian), and the
+Needs Foundry, one deployer key with Sepolia ETH and lREACT, the HOT key (only to approve the Guardians), and the
 addresses of COLD and the cosigner. The order breaks the reactive ↔ Guardian address cycle the way the Reactive docs
 suggest: reactive contract first, Guardians with its address, then wire them back.
 
@@ -183,14 +192,20 @@ export TRIPWIRE=0x...
 
 # 3. each destination chain: Guardian, plus callback reserves via depositTo on that chain's proxy
 for RPC in $BASE_RPC $ETH_RPC $UNI_RPC; do
-  TRIPWIRE=$TRIPWIRE FUND=0.002ether forge script script/DeployGuardian.s.sol --rpc-url $RPC --broadcast
+  FUND=0.002ether forge script script/DeployGuardian.s.sol --rpc-url $RPC --broadcast
 done
+export G_BASE=0x... G_ETH=0x... G_UNI=0x...
 
-# 4. Lasna, once per chain: guardian + tokens (+ optional THRESHOLDS, TRUSTED)
-CHAIN_ID=84532 GUARDIAN=0x... forge script script/Configure.s.sol --rpc-url $LASNA_RPC --broadcast
+# 4. Lasna, once per chain: its Guardian + tokens (+ optional THRESHOLDS, TRUSTED)
+CHAIN_ID=84532    GUARDIAN=$G_BASE forge script script/Configure.s.sol --rpc-url $LASNA_RPC --broadcast
+CHAIN_ID=11155111 GUARDIAN=$G_ETH  forge script script/Configure.s.sol --rpc-url $LASNA_RPC --broadcast
+CHAIN_ID=1301     GUARDIAN=$G_UNI  forge script script/Configure.s.sol --rpc-url $LASNA_RPC --broadcast
 
-# 5. each origin chain, signed by HOT: approve that chain's Guardian (max) for every token
-HOT_PK=... GUARDIAN=0x... forge script script/Arm.s.sol --rpc-url $BASE_RPC --broadcast
+# 5. each chain, signed by HOT: approve that chain's Guardian (max) for every token
+export HOT_PK=...
+GUARDIAN=$G_BASE forge script script/Arm.s.sol --rpc-url $BASE_RPC --broadcast
+GUARDIAN=$G_ETH  forge script script/Arm.s.sol --rpc-url $ETH_RPC  --broadcast
+GUARDIAN=$G_UNI  forge script script/Arm.s.sol --rpc-url $UNI_RPC  --broadcast
 
 # top up later (Lasna: system contract; elsewhere: callback proxy)
 TARGET=0x... AMOUNT=1000000000000000000 forge script script/Fund.s.sol --rpc-url $LASNA_RPC --broadcast
@@ -203,6 +218,34 @@ cast send $INTENT "intendFor(address,address,uint256,uint64)" $TOKEN $TO $AMOUNT
 cast send $PANIC "panic()" --rpc-url $RPC --private-key $COSIGNER_PK
 MODE=deploy|phish|pull|sweep forge script script/Drainer.s.sol:DrainerScript --rpc-url $RPC --broadcast
 ```
+
+## Watching it: the demo page
+
+[`demo/`](demo/) is a static page (no build step, no dependencies) that reads the chains from public RPCs and shows
+the loop as it happens: the watched move on the origin chain, the `Tripped` reaction on Lasna, and each Guardian's
+sweep, with explorer links, block timestamps and the latency between steps. It also shows hot vs vault balances,
+whether each Guardian is still approved, the reactive contract's lREACT balance and each Guardian's callback debt.
+
+```bash
+cd demo && python3 -m http.server 8000
+# live:    http://localhost:8000/?tripwire=0x<TripwireReactive>   (or set "tripwire" in demo/config.json)
+# replay:  http://localhost:8000/?mock=1   (&speed=2, &instant=1)
+```
+
+Only the reactive contract's address is needed: HOT, COLD, the cosigner, chains, Guardians and tokens are read from
+it. Base Sepolia blocks carry millisecond timestamps; the other chains' only whole seconds, and the page marks those
+latencies with "≈".
+
+`?mock=1` replays [`demo/fixture.json`](demo/fixture.json), labelled on screen as simulated. Its logs were emitted by
+these contracts in the Foundry simulator (`test/DemoTrace.t.sol`); its hashes and times are synthetic. Regenerate it
+and check the page logic offline:
+
+```bash
+forge test --mt test_demoTrace -vv --json | node demo/tools/build-fixture.mjs > demo/fixture.json
+node demo/tools/check.mjs   # signatures vs src/, topics and selectors vs cast, decoders, fixture replay
+```
+
+[`demo/STORYBOARD.md`](demo/STORYBOARD.md) is the shot list for the demo video.
 
 ## Deployed (Lasna + Sepolias)
 
@@ -225,9 +268,9 @@ MODE=deploy|phish|pull|sweep forge script script/Drainer.s.sol:DrainerScript --r
 
 ## Latency (origin block → sweep included)
 
-| Scenario | Runs | p50 | p95 | Notes |
-|---|---|---|---|---|
-| _tbd_ | | | | Base Sepolia uses 200 ms blocks; timestamps, not block counts |
+| Scenario | Runs | Origin → Reactive p50 | Origin → last sweep p50 | p95 | Notes |
+|---|---|---|---|---|---|
+| _tbd_ | | | | | block timestamps; Base Sepolia in ms, others in whole seconds |
 
 ## Notes on the Omni API
 
@@ -240,6 +283,8 @@ address** (no separate ReactVM id), and there is no `vm` flag: the constructor s
 address, so a callback method needs `onlyServiceProvider` as well (the Guardian uses both). The proxy holds back
 `_extraGas + _maxChargeGas` from the requested gas limit before calling the recipient (read 2026-11-08: 150k + 50k on
 Ethereum Sepolia, 80k + 50k on Base and Unichain Sepolia); the requested limit covers the largest.
+`react()` reads `LogRecord.opCode` as the number of topics (3 for `Transfer`/`Approval`, 4 for `Intend`), as the
+simulator does; the first live loop should be a `Transfer` or `Approval`, not a `Panic` (which doesn't check it).
 
 ## License
 
