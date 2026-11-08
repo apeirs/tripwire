@@ -114,6 +114,9 @@ eq(C.formatUnits((1n << 256n) - 1n, 18), "unlimited", "formatUnits max");
 eq(C.formatUnits(1n, 6), "<0.0001", "formatUnits dust is not shown as 0");
 eq(C.formatUnits(0n, 6), "0", "formatUnits zero");
 eq(C.formatUnits(20_500_000n, 6), "20.5", "formatUnits 6-decimal USDC");
+eq(C.formatMs(-800, true), "≈0 s", "formatMs: approximate sub-second negative gap reads ≈0 s");
+eq(C.formatMs(-800, false), "-0.80 s", "formatMs: exact negative gap is shown as is");
+eq(C.formatMs(1600, true), "≈+1.60 s", "formatMs approx positive");
 {
   // Amounts are formatted with each token's own decimals: a real 6-decimal USDC next to an 18-decimal test token.
   const usdc = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";

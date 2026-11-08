@@ -166,6 +166,9 @@
 
   function formatMs(ms, approx) {
     if (ms == null || !isFinite(ms)) return "–";
+    // Block clocks tick in whole seconds (Reactive) or differ by a little, so an approximate gap just under zero is
+    // a rounding artefact: a later block can't really precede the one that caused it. Show it as "≈0 s".
+    if (approx && ms < 0 && ms > -2000) return "≈0 s";
     const s = ms / 1000;
     const txt = Math.abs(s) < 10 ? s.toFixed(2) + " s" : Math.abs(s) < 120 ? s.toFixed(1) + " s" : (s / 60).toFixed(1) + " min";
     return (approx ? "≈" : "") + (ms >= 0 ? "+" : "") + txt;
