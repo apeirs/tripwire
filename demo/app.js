@@ -333,6 +333,7 @@
     jobs.push(
       rpc(L, "eth_getBalance", [ctx.tripwire, "latest"]).then((b) => ((S.health[L] ??= {}).balance = C.toBig(b))).catch(() => {}),
       call(L, C.REACTIVE_SYSTEM, C.encodeCall(C.SELECTOR.debt, ctx.tripwire)).then((d) => ((S.health[L] ??= {}).debt = C.toBig(d))).catch(() => {}),
+      call(L, C.REACTIVE_SYSTEM, C.encodeCall(C.SELECTOR.reserves, ctx.tripwire)).then((r) => ((S.health[L] ??= {}).reserve = C.toBig(r))).catch(() => {}),
     );
     await Promise.all(jobs);
   }
@@ -403,7 +404,7 @@
         <div><span class="k">Vault (COLD)</span>${addrLink(S.chainIds[0], ctx.cold)}</div>
         <div><span class="k">Cosigner</span>${addrLink(S.chainIds[0], ctx.cosigner)}</div>
         <div><span class="k">TripwireReactive</span>${chip(L)} ${addrLink(L, ctx.tripwire)}
-          ${h.balance != null ? `<span class="muted small">${esc(C.formatUnits(h.balance, 18, 3))} ${S.ctx.lasnaChainId === 1597 ? "REACT" : "lREACT"}${h.debt ? `, <span class="bad-t">debt ${esc(C.formatUnits(h.debt, 18, 4))}</span>` : ""}</span>` : ""}
+          ${h.balance != null ? `<span class="muted small">${esc(C.formatUnits(h.balance, 18, 3))} ${S.ctx.lasnaChainId === 1597 ? "REACT" : "lREACT"}${h.reserve ? ` + ${esc(C.formatUnits(h.reserve, 18, 3))} in reserve` : ""}${h.debt ? `, <span class="bad-t">debt ${esc(C.formatUnits(h.debt, 18, 4))}</span>` : ""}</span>` : ""}
           ${statusDot(L)}</div>
       </div>
       <table class="tbl"><thead><tr><th>Chain</th><th>Guardian</th><th>Tokens</th><th>Callback debt</th><th>RPC</th></tr></thead><tbody>${rows}</tbody></table>

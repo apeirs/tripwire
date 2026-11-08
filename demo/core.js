@@ -62,6 +62,7 @@
     decimals: "0x313ce567", // decimals()
     symbol: "0x95d89b41", // symbol()
     debt: "0x9b6c56ec", // debt(address)
+    reserves: "0xd66bd524", // reserves(address): system contract / callback proxy deposits (depositTo)
     tripCooldown: "0xfd7375f9", // tripCooldown() (tools/measure.mjs)
     threshold: "0xd60dd2ca", // threshold(uint256,address)
     trusted: "0x6e9821c2", // trusted(address)
@@ -79,6 +80,7 @@
     decimals: "decimals()",
     symbol: "symbol()",
     debt: "debt(address)",
+    reserves: "reserves(address)",
     tripCooldown: "tripCooldown()",
     threshold: "threshold(uint256,address)",
     trusted: "trusted(address)",
