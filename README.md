@@ -389,11 +389,13 @@ if you want them. Useful pieces on their own: `node tools/video/record.mjs [--li
 
 | Contract | Chain | Address |
 |---|---|---|
-| TripwireReactive | Reactive mainnet 1597 | _tbd_ ([reactscan.net](https://reactscan.net)) |
-| Guardian | Base 8453 | _tbd_ ([basescan.org](https://basescan.org)) |
-| Guardian | Unichain 130 | _tbd_ ([uniscan.xyz](https://uniscan.xyz)) |
-| Intent / PanicButton | Base and Unichain (same address) | _tbd_ |
-| Demo tokens TDTA / TDTB / TDTC (worthless, open mint) | Base and Unichain (same address) | _tbd_ |
+| TripwireReactive | Reactive mainnet 1597 | [`0x1898A6001b4EBBE27d139195F136Dd185DCC819a`](https://reactscan.net/address/0x1898A6001b4EBBE27d139195F136Dd185DCC819a) |
+| Guardian | Base 8453 | [`0x5adA1ee3C19C074BF10d560d0F1b9A94Dcf02F7e`](https://basescan.org/address/0x5adA1ee3C19C074BF10d560d0F1b9A94Dcf02F7e) |
+| Guardian | Unichain 130 | [`0x472EAcb4C6710e1dDa165D30a6d3BA745207D9E1`](https://uniscan.xyz/address/0x472EAcb4C6710e1dDa165D30a6d3BA745207D9E1) |
+| Intent | Base and Unichain (same address) | `0xBb31114B025C84D2348Eb50E9e748f368060eBE4` ([Base](https://basescan.org/address/0xBb31114B025C84D2348Eb50E9e748f368060eBE4), [Unichain](https://uniscan.xyz/address/0xBb31114B025C84D2348Eb50E9e748f368060eBE4)) |
+| PanicButton | Base and Unichain (same address) | `0x75f8b4fb7b11d8F496f6136354A56EAC540E1908` ([Base](https://basescan.org/address/0x75f8b4fb7b11d8F496f6136354A56EAC540E1908), [Unichain](https://uniscan.xyz/address/0x75f8b4fb7b11d8F496f6136354A56EAC540E1908)) |
+| Demo tokens TDTA / TDTB / TDTC (worthless, open mint) | Base and Unichain (same address) | `0x14a528e0516512195EC68308E62c466725D0aD0D` / `0x23704A585adeeA52E0f1157352C60ca89017B213` / `0x1c2bFCbd083D2ebA4933447f9E7d0fAbAC22Ee8c` |
+| Drainer (demo attacker) | Base | [`0x547Ce432D1165D5823A555bE653047fF3d75D505`](https://basescan.org/address/0x547Ce432D1165D5823A555bE653047fF3d75D505) |
 
 ## Loops on-chain
 
