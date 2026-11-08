@@ -324,6 +324,34 @@ node demo/tools/check.mjs   # signatures vs src/, topics and selectors vs cast, 
 
 [`demo/STORYBOARD.md`](demo/STORYBOARD.md) is the shot list for the demo video.
 
+### Arming it from a browser: the arm page
+
+[`demo/arm/`](demo/arm/) does the Deploy steps above without a terminal. Connect a wallet and either open an
+existing guard (its TripwireReactive address) or **set up a new one**: enter HOT, COLD and the cosigner, tick the
+chains and tokens, and the page lists every transaction in plain words before you sign it. In order: Intent and
+PanicButton where they are missing (CREATE2, the same address everywhere), the Tripwire contract on Reactive Network,
+then per chain a Guardian, its callback reserves, `setGuardian` and `addToken`, and finally HOT's approvals. A step
+that needs a different signer (owner or HOT) waits until you switch accounts in the wallet, and the wallet is switched
+to each step's chain for you.
+
+For a guard that exists, the page shows what is armed (per chain: Guardian checks, reserves and debt, each token's
+HOT and COLD balance, threshold and approval) and offers only what is missing: "Arm Base: 3 approvals", or "Finish
+setup" for everything at once. It also has:
+
+- **Panic** (HOT or cosigner), on any chain with a PanicButton;
+- **Pre-clear a payment** (cosigner): `Intent.intendFor`, with the live pre-clears listed;
+- **Rules** (owner): watch or stop watching a token, thresholds, trusted addresses, merge window, hand over ownership;
+- **Reserves** (any account): top up Tripwire or a Guardian, settle debt;
+- **Disarm a chain**: the owner unsets the Guardian first, then HOT revokes, so the revokes don't trip;
+- **History**: every trip by id with each chain's sweep (`Guardian.handled`), amounts for recent ones.
+
+```bash
+cd demo && python3 -m http.server 8000
+# http://localhost:8000/arm/                 testnet config (demo/config.json)
+# http://localhost:8000/arm/?net=mainnet     demo/config.mainnet.json
+# http://localhost:8000/arm/?tripwire=0x…    open a guard directly; ?config=<file in demo/> for any other config
+```
+
 ## Recording the video
 
 `tools/video/` turns the monitor page into the submission video (`demo/STORYBOARD.md` has the shot list). It records
