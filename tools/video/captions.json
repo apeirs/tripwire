@@ -1,0 +1,25 @@
+{
+  "title": {
+    "line1": "Tripwire",
+    "line2": "One stolen key shouldn't cost you every chain.",
+    "line3": "Reactive Omni hackathon  |  Set It and Forget It",
+    "seconds": 4
+  },
+  "end": {
+    "line1": "Tripwire",
+    "line2": "{{REPO_URL}}",
+    "line3": "Reactive Omni hackathon  |  Base, Ethereum and Unichain Sepolia",
+    "seconds": 5
+  },
+  "scenes": {
+    "intro": "Tripwire watches a hot wallet on three chains. When something it can't explain\nleaves the wallet, it moves everything else to your cold address.",
+    "guarded": "A reactive contract on Reactive Network watches the wallet. Each chain has a Guardian\nthat can only ever pay one address: the cold wallet.",
+    "normal": "Normal use: the second key pre-clears one payment, the payment goes through,\nand Tripwire stays quiet.",
+    "attack": "The attack: the wallet signs a phishing approval for a drainer contract.\nAn unknown spender, nothing pre-cleared: the contract trips.",
+    "sweeps": "Reactive Network asks every chain's Guardian to sweep.\nOrigin to last sweep: {{LAT_LAST_SWEEP}} s in this run.",
+    "pull": "When the drainer comes back to pull, there is nothing left to take.",
+    "proof": "Every step is an ordinary transaction: the approval on the origin chain,\nthe reaction on Lasna, the sweep callbacks on each chain.",
+    "latency": "Measured from block timestamps. Median over {{RUNS}} runs: {{LAT_P50}} s,\np95 {{LAT_P95}} s.",
+    "outro": "The first move still lands. Tripwire saves everything else, on every chain,\nwith no server and no keeper key to run."
+  }
+}

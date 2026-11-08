@@ -308,6 +308,39 @@ node demo/tools/check.mjs   # signatures vs src/, topics and selectors vs cast, 
 
 [`demo/STORYBOARD.md`](demo/STORYBOARD.md) is the shot list for the demo video.
 
+## Recording the video
+
+`tools/video/` turns the monitor page into the submission video (`demo/STORYBOARD.md` has the shot list). It records
+the page headless at 1920x1080 (Playwright + Chromium), then ffmpeg adds a title card, captions from
+`tools/video/captions.json` and an end card, and writes `tools/video/out/tripwire-demo.mp4` (H.264, yuv420p, 1920x1080,
+under 3:00; `out/` and `work/` are git-ignored, and the intermediate webm is deleted after the build).
+
+**Draft, from the simulated replay (works any time, no network, about 2.5 minutes):**
+
+```bash
+tools/video/make.sh --draft
+```
+
+Every frame carries a "DRAFT - simulated replay" stamp. It is for checking the cut, not for submitting.
+
+**Final, from a live run:** the page records while you run the attack from a terminal, so it needs the live setup
+from the Deploy section (`demo/config.json` has the `tripwire` address) and the storyboard's "Before recording" steps.
+
+```bash
+cp tools/video/values.example.json tools/video/values.json   # fill REPO_URL and the measured latencies (see README "Latency")
+tools/video/make.sh --live --values tools/video/values.json  # starts recording; waits up to 15 min for a real trip
+# in another terminal, at the "normal" caption: the cosigner intent + payment, then MODE=phish (STORYBOARD shots 4-5)
+```
+
+The recorder waits for the intent row, then the trip card, then "all chains swept", so the page scenes follow your
+take. A final build **refuses to run while any `{{PLACEHOLDER}}` is left in the captions** (`REPO_URL`,
+`LAT_LAST_SWEEP`, `RUNS`, `LAT_P50`, `LAT_P95`); fill them from the real runs, never from the replay fixture.
+`--draft` builds anyway and leaves the placeholders visible.
+
+Only the page scenes are recorded. Terminal and README shots (STORYBOARD 2, 4, 5, 7, 10) are not; cut them in separately
+if you want them. Useful pieces on their own: `node tools/video/record.mjs [--live] [--speed 1.5] [--zoom 1.25] [--out DIR]`
+(writes `raw.webm` and `scenes.json`) and `tools/video/build.sh [--draft] [--values FILE] [--keep]`.
+
 ## Deployed (Lasna + Sepolias)
 
 | Contract | Chain | Address |
