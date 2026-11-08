@@ -439,7 +439,10 @@
         const ref = trip.originRef || {};
         const r = trip.reactive;
         const oText = o ? originText(o) : `origin tx ${C.short(ref.txHash || "")} (outside the window)`;
-        const sweeps = trip.requests
+        // Landed sweeps in the order they landed, then the ones still pending.
+        const landedAt = (q) => { const s = trip.sweeps[q.chainId]; return s && s.ts != null ? Number(s.ts) : Infinity; };
+        const sweeps = [...trip.requests]
+          .sort((a, b) => landedAt(a) - landedAt(b))
           .map((q) => {
             const s = trip.sweeps[q.chainId];
             const lat = trip.latency.sweeps[q.chainId];
@@ -448,8 +451,8 @@
             const skipped = s.skipped.length ? ` <span class="warn-t">skipped ${s.skipped.map((x) => esc(C.tokenMeta(S.ctx, q.chainId, x.token).symbol + ": " + x.reason)).join(", ")}</span>` : "";
             return `<div class="sweep ${s.done ? "done" : ""}">${chip(q.chainId)}
               <span class="lat">${esc(C.formatMs(lat && lat.fromOrigin, lat && lat.approx))}</span>
-              <span>${s.replayed ? "replay ignored" : "→ vault: " + moved}${skipped}</span>
-              <span class="meta">${esc(clock(s.ts))} · ${txLink(q.chainId, s.txHash)}</span></div>`;
+              <span class="meta">${esc(clock(s.ts))} · ${txLink(q.chainId, s.txHash)}</span>
+              <span class="what">${s.replayed ? "replay ignored" : "→ vault: " + moved}${skipped}</span></div>`;
           })
           .join("");
         const all = trip.latency.allSwept;

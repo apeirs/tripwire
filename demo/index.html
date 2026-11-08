@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tripwire Monitor</title>
+<link rel="icon" href="data:,">
 <meta name="description" content="Live view of a Tripwire drain guard: watched move on the origin chain, the Reactive Network trip, and the Guardian sweeps on every chain.">
 <style>
   :root {
@@ -27,7 +28,7 @@
   .brand .sub { font-size: 14px; font-weight: 400; color: var(--muted); margin-left: 6px; }
   .hdr-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
   main { max-width: 1240px; margin: 0 auto; padding: 16px 24px 48px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  html, body { overflow-x: hidden; }
+  html, body { overflow-x: clip; } /* clip, not hidden: hidden makes body a scroll container and breaks the sticky header */
   .banner { max-width: 1240px; margin: 12px auto 0; padding: 10px 24px; color: var(--warn); font-size: 13px; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; min-width: 0; }
   .panel h2 { font-size: 15px; margin: 0 0 10px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
@@ -69,6 +70,7 @@
   .sweep:last-child { border-bottom: 0; }
   .sweep.done .lat { color: var(--ok); }
   .sweep .meta { margin-left: auto; }
+  .sweep .what { flex: 1 1 100%; }
   .feed { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
   .row { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 5px 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); font-size: 14px; }
   .row .t { font-family: var(--mono); font-size: 12px; color: var(--muted); }
@@ -91,6 +93,9 @@
     .meta { white-space: normal; word-break: break-all; }
     .sweep .meta, .row .meta { margin-left: 0; }
     .brand .sub { display: block; margin-left: 0; }
+    .tbl th, .tbl td { padding: 4px 6px; }
+    .bar-cell { min-width: 0; white-space: nowrap; }
+    .bar { width: 48px; margin-right: 6px; }
   }
 </style>
 </head>
