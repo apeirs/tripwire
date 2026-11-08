@@ -2,7 +2,8 @@
 // Records the Tripwire monitor page (demo/) as one 1920x1080 webm with a scene-timestamp JSON.
 //   node tools/video/record.mjs [--live] [--out DIR] [--speed N] [--zoom Z] [--query "?..."] [--timeout SEC]
 // Default is the simulated replay (?mock=1). --live opens the page against the public RPCs (demo/config.json or
-// ?tripwire=0x...) and waits for a real trip: run the attack from a terminal while it records.
+// ?tripwire=0x...; with --mainnet, demo/config.mainnet.json) and waits for a real trip: run the attack from a
+// terminal while it records.
 // Writes <out>/raw.webm and <out>/scenes.json ({id, start, end} in seconds from the start of raw.webm).
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
@@ -20,7 +21,7 @@ const outDir = resolve(opt("--out", join(here, "work")));
 const zoom = Number(opt("--zoom", "1.25"));
 const speed = opt("--speed", "1.5");
 const timeoutS = Number(opt("--timeout", live ? "900" : "180"));
-const query = opt("--query", live ? "?lookback=5" : `?mock=1&speed=${speed}`);
+const query = opt("--query", live ? (flag("--mainnet") ? "?net=mainnet&lookback=5" : "?lookback=5") : `?mock=1&speed=${speed}`);
 
 function loadPlaywright() {
   const cands = [process.env.PLAYWRIGHT_DIR, "playwright", "/home/a/apeir-online/browser/node_modules/playwright"].filter(Boolean);

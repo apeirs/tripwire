@@ -12,7 +12,7 @@ interface IArmToken {
 
 /// @notice Origin chains, step 5, signed by the HOT wallet: approve this chain's Guardian for every token.
 ///         Safe to grant: the Guardian can only move tokens to COLD, and only on a Tripwire callback.
-/// Env: HOT_PK, GUARDIAN, the token list (see Tokens.sol: TOKENS, USDC=true for Circle's testnet USDC).
+/// Env: HOT_PK, GUARDIAN, the token list (see Tokens.sol: TOKENS, USDC=true for Circle's USDC on that chain).
 contract Arm is Script {
     error NotAToken(address token);
 

@@ -9,13 +9,14 @@ import {Tokens} from "./Tokens.sol";
 /// @notice Reactive Network, step 4, once per protected chain: point it at its Guardian and register the tokens.
 ///         Safe to re-run: tokens already watched keep their subscriptions and only get their threshold updated.
 /// Env: PRIVATE_KEY (owner), TRIPWIRE, CHAIN_ID, GUARDIAN, the token list (see Tokens.sol: TOKENS, THRESHOLDS,
-///      USDC=true for Circle's testnet USDC, USDC_THRESHOLD), TRUSTED (optional comma list of recipients/spenders
+///      USDC=true for Circle's USDC, USDC_THRESHOLD), TRUSTED (optional comma list of recipients/spenders
 ///      that never trip).
 contract Configure is Script {
     function run() external {
         require(Chains.isReactive(block.chainid), "run this on Reactive Network");
         TripwireReactive tw = TripwireReactive(payable(vm.envAddress("TRIPWIRE")));
         uint256 chainId = vm.envUint("CHAIN_ID");
+        Chains.requireSameNetwork(block.chainid, chainId);
         (address[] memory tokens, uint256[] memory thresholds) = Tokens.list(chainId);
         address[] memory trusted = vm.envOr("TRUSTED", ",", new address[](0));
 

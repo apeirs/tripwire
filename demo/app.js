@@ -13,6 +13,11 @@
     84532: { name: "Base Sepolia", short: "Base", rpc: "https://sepolia.base.org", explorer: "https://sepolia.basescan.org", callbackProxy: "0x476F44b11F5C942c58f4c8E3d0300E5710743585", blockMs: 200, maxRange: 200, color: "#4c8dff" },
     11155111: { name: "Ethereum Sepolia", short: "Ethereum", rpc: "https://ethereum-sepolia-rpc.publicnode.com", explorer: "https://sepolia.etherscan.io", callbackProxy: "0xAa14d9Cd0f788Ca23d11805986C1d8bd035D23b4", blockMs: 12000, maxRange: 1000, color: "#a6a9ff" },
     1301: { name: "Unichain Sepolia", short: "Unichain", rpc: "https://sepolia.unichain.org", explorer: "https://sepolia.uniscan.xyz", callbackProxy: "0x775c9B990ADe401060B78D0e98684eEf8d2466C1", blockMs: 1000, maxRange: 1000, color: "#f05bd0" },
+    // Mainnet (?net=mainnet loads config.mainnet.json, which repeats these)
+    1597: { name: "Reactive Mainnet", short: "Reactive", rpc: "https://mainnet-rpc.rnk.dev/", explorer: "https://reactscan.net", blockMs: 786, maxRange: 1000, color: "#2bd4a4" },
+    8453: { name: "Base", short: "Base", rpc: "https://base-rpc.publicnode.com", explorer: "https://basescan.org", callbackProxy: "0xCc780DdE33f56f55dE778D42c930959374a4a068", blockMs: 200, maxRange: 1000, color: "#4c8dff" },
+    1: { name: "Ethereum", short: "Ethereum", rpc: "https://ethereum-rpc.publicnode.com", explorer: "https://etherscan.io", callbackProxy: "0xFCE1F192F489c988392aBC16E91e359d540d94Fe", blockMs: 12000, maxRange: 1000, color: "#a6a9ff" },
+    130: { name: "Unichain", short: "Unichain", rpc: "https://mainnet.unichain.org", explorer: "https://uniscan.xyz", callbackProxy: "0x754120EC7a6eF81E4c5c835AA603C63Da64693E6", blockMs: 1000, maxRange: 1000, color: "#f05bd0" },
   };
 
   const S = {
@@ -80,7 +85,7 @@
 
   async function boot() {
     try {
-      S.cfg = await fetchJson(params.get("config") || "config.json");
+      S.cfg = await fetchJson(params.get("config") || (params.get("net") === "mainnet" ? "config.mainnet.json" : "config.json"));
     } catch (e) {
       S.cfg = {};
       console.warn("config.json not loaded, using defaults:", e.message);
@@ -162,7 +167,7 @@
     let cosigner = params.get("cosigner") || fb.cosigner;
     let chains = fb.chains || {};
     if (!tripwire) {
-      S.error = "No Tripwire address yet. Put the TripwireReactive address (Lasna) in demo/config.json or add ?tripwire=0x… to the URL. To see the page with recorded data, open ?mock=1.";
+      S.error = "No Tripwire address yet. Put the TripwireReactive address in demo/config.json (config.mainnet.json with ?net=mainnet) or add ?tripwire=0x… to the URL. To see the page with recorded data, open ?mock=1.";
       return render();
     }
     S.status[lasna] = { ok: true, text: "reading config" };
@@ -170,7 +175,7 @@
     try {
       // eth_call to an address without code "succeeds" with empty data, so check the code first.
       const code = await rpc(lasna, "eth_getCode", [tripwire, "latest"]);
-      if (!code || code === "0x") throw new Error("no contract at this address on Lasna");
+      if (!code || code === "0x") throw new Error(`no contract at this address on ${net(lasna).name}`);
       const word = async (sel) => C.wordAddr(await call(lasna, tripwire, sel));
       [hot, cold, cosigner] = await Promise.all([word(C.SELECTOR.HOT), word(C.SELECTOR.COLD), word(C.SELECTOR.COSIGNER)]);
       if (/^0x0{40}$/.test(hot)) throw new Error("HOT() returned nothing: is this a TripwireReactive?");
@@ -184,7 +189,7 @@
     } catch (e) {
       S.status[lasna] = { ok: false, text: "config read failed: " + e.message };
       if (!hot || !Object.keys(chains).length) {
-        S.error = `Could not read TripwireReactive ${tripwire} on Lasna (${e.message}), and config.json has no fallback.`;
+        S.error = `Could not read TripwireReactive ${tripwire} on ${net(lasna).name} (${e.message}), and config.json has no fallback.`;
         return render();
       }
     }
@@ -333,7 +338,7 @@
   }
 
   function chainOrder(a, b) {
-    const order = [84532, 11155111, 1301];
+    const order = [84532, 8453, 11155111, 1, 1301, 130]; // Base, Ethereum, Unichain (testnet, mainnet)
     const ia = order.indexOf(a), ib = order.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a - b;
   }

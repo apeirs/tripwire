@@ -204,5 +204,21 @@ eq(JSON.stringify(M.parseCsv('a,"b,c",d\n1,"say ""hi""",3\n')), JSON.stringify([
   ok(text.includes("| Base Sepolia | **origin block → last sweep block (end to end)** | 1 | ≈6.00 s |"), "end-to-end row");
 }
 
+{
+  // One deployer with the same nonces on two chains gets the same Guardian address on both (the mainnet throwaway
+  // does): each chain's sweep must stay on its own chain, and a Guardian address from another deployment is ignored.
+  const g = "0x2279b7a0a67db372996a5fab50d91eaa73d2ebe6";
+  const sctx = C.makeContext({ lasnaChainId: 1597, chains: { 8453: { guardian: g }, 130: { guardian: g } } });
+  const sm = new C.Monitor(sctx);
+  const sweepLog = (chainId, address, tx) => ({
+    chainId, address, topics: [C.TOPIC.SweepDone, C.numTopic(1)], data: run("abi-encode", "f(uint256,uint256,uint256)", "3", "0", "0"),
+    transactionHash: tx, logIndex: 0, blockNumber: 5, blockTimestampMs: 1000, tsExact: true,
+  });
+  sm.ingest([sweepLog(8453, g, "0x0a"), sweepLog(130, g, "0x0b"), sweepLog(8453, "0x00000000000000000000000000000000000000ff", "0x0c")]);
+  const st = sm.view().trips.find((x) => x.tripId === 1);
+  eq(Object.keys((st || {}).sweeps || {}).sort().join(","), "130,8453", "same Guardian address on two chains: one sweep per chain");
+  eq(st && st.sweeps[8453].txHash, "0x0a", "a foreign Guardian's SweepDone is ignored");
+}
+
 console.log(`${passed} checks passed${failed ? `, ${failed} FAILED` : ""}`);
 process.exit(failed ? 1 : 0);

@@ -1,0 +1,56 @@
+{
+  "_help": "Reactive MAINNET deployment (Base + Unichain; Ethereum is supported but not deployed). Open the page with ?net=mainnet (or ?config=config.mainnet.json). `lasnaChainId` is the Reactive chain id (1597 here). RPCs: base-rpc.publicnode.com because mainnet.base.org refuses eth_getLogs; Unichain's public RPC caps log ranges at 1000 blocks. All four send CORS headers (checked 2026-11-08).",
+  "lasnaChainId": 1597,
+  "tripwire": "",
+  "lookbackMinutes": 10,
+  "pollMs": 4000,
+  "balanceEveryMs": 8000,
+  "labels": {},
+  "fallback": {
+    "hot": "",
+    "cold": "",
+    "cosigner": "",
+    "chains": {}
+  },
+  "networks": {
+    "1597": {
+      "name": "Reactive Mainnet",
+      "short": "Reactive",
+      "rpc": "https://mainnet-rpc.rnk.dev/",
+      "explorer": "https://reactscan.net",
+      "blockMs": 786,
+      "maxRange": 1000,
+      "color": "#2bd4a4"
+    },
+    "8453": {
+      "name": "Base",
+      "short": "Base",
+      "rpc": "https://base-rpc.publicnode.com",
+      "explorer": "https://basescan.org",
+      "callbackProxy": "0xCc780DdE33f56f55dE778D42c930959374a4a068",
+      "blockMs": 200,
+      "maxRange": 1000,
+      "color": "#4c8dff"
+    },
+    "1": {
+      "name": "Ethereum",
+      "short": "Ethereum",
+      "rpc": "https://ethereum-rpc.publicnode.com",
+      "explorer": "https://etherscan.io",
+      "callbackProxy": "0xFCE1F192F489c988392aBC16E91e359d540d94Fe",
+      "blockMs": 12000,
+      "maxRange": 1000,
+      "color": "#a6a9ff"
+    },
+    "130": {
+      "name": "Unichain",
+      "short": "Unichain",
+      "rpc": "https://mainnet.unichain.org",
+      "explorer": "https://uniscan.xyz",
+      "callbackProxy": "0x754120EC7a6eF81E4c5c835AA603C63Da64693E6",
+      "blockMs": 1000,
+      "maxRange": 1000,
+      "color": "#f05bd0"
+    }
+  }
+}

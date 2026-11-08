@@ -3,8 +3,9 @@
 //
 // For each run: tops HOT up on the open-mint demo tokens (and, with --refill, moves faucet USDC back from COLD),
 // sends one untrusted move from HOT on the origin chain (script/Measure.s.sol, keys from the environment like every
-// other script), then polls the origin chain, Lasna and every destination chain for the trip: Observed/Tripped on
-// Lasna, SweepDone from each Guardian. It records block timestamps (Base Sepolia in ms, the others in whole seconds)
+// other script), then polls the origin chain, Reactive Network and every destination chain for the trip:
+// Observed/Tripped on Reactive Network (Lasna or mainnet), SweepDone from each Guardian. It records block timestamps
+// (Base in ms, the others in whole seconds)
 // and wall-clock times, appends one CSV row per (run, destination chain), and writes a median/p90 table into
 // README.md between the `measure:latency` markers.
 //
@@ -17,6 +18,7 @@
 //   node tools/measure.mjs --dry-run                 # the plan, nothing sent
 //   node tools/measure.mjs --fixture                 # table from demo/fixture.json (simulated), prints only
 //   node tools/measure.mjs --runs 10 --origin all    # live: needs PRIVATE_KEY (owner) and HOT_PK in the env
+//   node tools/measure.mjs --mainnet --dry-run       # Reactive mainnet + Base/Unichain (demo/config.mainnet.json)
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -30,8 +32,19 @@ const repo = resolve(here, "..");
 const C = createRequire(import.meta.url)(join(repo, "demo", "core.js"));
 
 const LASNA = 5318007;
-const ENV_RPC = { 5318007: "LASNA_RPC", 84532: "BASE_RPC", 11155111: "ETH_RPC", 1301: "UNI_RPC" };
-const CHAIN_ALIAS = { base: 84532, eth: 11155111, ethereum: 11155111, uni: 1301, unichain: 1301, lasna: LASNA };
+const REACTIVE_MAINNET = 1597;
+// Per network; the config's lasnaChainId (the Reactive chain id) says which: 1597 = mainnet, anything else = testnet.
+const ENV_RPC = {
+  testnet: { 5318007: "LASNA_RPC", 84532: "BASE_RPC", 11155111: "ETH_RPC", 1301: "UNI_RPC" },
+  mainnet: { 1597: "REACTIVE_RPC", 8453: "BASE_RPC", 1: "ETH_RPC", 130: "UNI_RPC" },
+};
+const CHAIN_ALIAS = {
+  testnet: { base: 84532, eth: 11155111, ethereum: 11155111, uni: 1301, unichain: 1301, lasna: LASNA, reactive: LASNA },
+  mainnet: { base: 8453, eth: 1, ethereum: 1, uni: 130, unichain: 130, reactive: REACTIVE_MAINNET },
+};
+const CHAIN_ORDER = [84532, 8453, 11155111, 1, 1301, 130]; // Base, Ethereum, Unichain (testnet, mainnet)
+const netOf = (reactiveId) => (reactiveId === REACTIVE_MAINNET ? "mainnet" : "testnet");
+const chainAlias = (name, reactiveId) => CHAIN_ALIAS[netOf(reactiveId)][String(name).toLowerCase()] ?? Number(name);
 const SECRET_ENV = ["PRIVATE_KEY", "HOT_PK", "COSIGNER_PK", "COLD_PK", "ATTACKER_PK"];
 const DEFAULT_SINK = "0x000000000000000000000000000000000000dEaD";
 const MARK_BEGIN = "<!-- measure:latency:begin";
@@ -53,7 +66,7 @@ Modes
 
 Run options
   --runs N             runs (default 10)
-  --origin X           origin chain: 84532 | 11155111 | 1301 | base | eth | uni | all (rotate), default: first chain
+  --origin X           origin chain: a chain id | base | eth | uni | all (rotate), default: first chain
   --scenario S         transfer (default) | approval | panic (cosigner, needs COSIGNER_PK)
   --token T            token to move: address or symbol on the origin chain (default: first open-mint token)
   --amount A           amount in whole tokens, decimals read from the token (default 1)
@@ -69,10 +82,12 @@ Run options
   --keep-cooldown      don't touch tripCooldown (runs inside one window merge: only useful for a single run)
 
 Inputs and outputs
-  --config PATH        demo config (networks + tripwire); default demo/config.json. With the default config,
-                       LASNA_RPC / BASE_RPC / ETH_RPC / UNI_RPC override its RPCs; an explicit --config wins over them.
+  --mainnet            Reactive mainnet (1597) + Base / Ethereum / Unichain: default config demo/config.mainnet.json
+  --config PATH        demo config (networks + tripwire); default demo/config.json (Lasna + Sepolias). With a default
+                       config, LASNA_RPC (or REACTIVE_RPC on mainnet) / BASE_RPC / ETH_RPC / UNI_RPC override its RPCs;
+                       an explicit --config wins over them.
   --rpc ID=URL         override one chain's RPC (repeatable)
-  --tripwire ADDR      TripwireReactive on Lasna (else $TRIPWIRE, else config "tripwire")
+  --tripwire ADDR      TripwireReactive on Reactive Network (else $TRIPWIRE, else config "tripwire")
   --csv PATH           per-run CSV, appended (default docs/latency.csv); --fresh starts it over
   --readme PATH        file with the measure:latency markers (default README.md); --no-readme to skip
   --source LABEL       CSV "source" column (default: live, fixture in --fixture mode)
@@ -104,6 +119,7 @@ function parseCli(argv) {
       "rpc-timeout": { type: "string" },
       "keep-cooldown": { type: "boolean" },
       config: { type: "string" },
+      mainnet: { type: "boolean" },
       rpc: { type: "string", multiple: true },
       tripwire: { type: "string" },
       csv: { type: "string" },
@@ -138,7 +154,8 @@ function parseCli(argv) {
     pollMs: num("poll", 1000, 100),
     rpcTimeoutMs: num("rpc-timeout", 15000, 1000),
     keepCooldown: !!values["keep-cooldown"],
-    configPath: values.config ? resolve(values.config) : join(repo, "demo", "config.json"),
+    mainnet: !!values.mainnet,
+    configPath: values.config ? resolve(values.config) : join(repo, "demo", values.mainnet ? "config.mainnet.json" : "config.json"),
     configExplicit: !!values.config,
     rpcOverrides: values.rpc || [],
     tripwire: values.tripwire || process.env.TRIPWIRE || null,
@@ -225,8 +242,10 @@ function loadNetworks(o) {
   }
   const nets = {};
   for (const [id, n] of Object.entries(cfg.networks || {})) nets[Number(id)] = { ...n };
+  const reactiveId = Number(cfg.lasnaChainId || (o.mainnet ? REACTIVE_MAINNET : LASNA));
+  if (o.mainnet && reactiveId !== REACTIVE_MAINNET) throw new Error(`--mainnet, but ${o.configPath} is for chain ${reactiveId}`);
   if (!o.configExplicit) {
-    for (const [id, env] of Object.entries(ENV_RPC)) if (process.env[env]) (nets[Number(id)] ??= {}).rpc = process.env[env];
+    for (const [id, env] of Object.entries(ENV_RPC[netOf(reactiveId)])) if (process.env[env]) (nets[Number(id)] ??= {}).rpc = process.env[env];
   }
   for (const spec of o.rpcOverrides) {
     const m = /^(\d+)=(.+)$/.exec(spec);
@@ -237,7 +256,7 @@ function loadNetworks(o) {
     n.name ??= `chain ${id}`;
     n.short ??= n.name;
   }
-  return { cfg, nets, lasnaChainId: Number(cfg.lasnaChainId || LASNA), tripwire: o.tripwire || cfg.tripwire || null };
+  return { cfg, nets, lasnaChainId: reactiveId, tripwire: o.tripwire || cfg.tripwire || null };
 }
 
 function makeRpc(nets, timeoutMs) {
@@ -535,14 +554,13 @@ function renderTable(rows, nets, { simulated = false, csvRel = null } = {}) {
   if (!origins.length) lines.push("| – | no complete run yet | 0 | – | – | – |");
   lines.push(
     "",
-    "Times are the timestamps of the blocks that include each step. Base Sepolia blocks carry milliseconds; Lasna, Ethereum and Unichain Sepolia only whole seconds, so hops that touch them are marked ≈ (±1 s); a small negative value means two chains' clocks disagree by that much. p90 interpolates between the closest runs. The wall-clock row is what a watcher polling every second saw, from the origin receipt to the last Guardian's `SweepDone`.",
+    "Times are the timestamps of the blocks that include each step. Base blocks carry milliseconds; Reactive Network, Ethereum and Unichain blocks only whole seconds, so hops that touch them are marked ≈ (±1 s); a small negative value means two chains' clocks disagree by that much. p90 interpolates between the closest runs. The wall-clock row is what a watcher polling every second saw, from the origin receipt to the last Guardian's `SweepDone`.",
   );
   return { text: lines.join("\n"), summary: S };
 }
 
 function order(id) {
-  const o = [84532, 11155111, 1301];
-  const i = o.indexOf(id);
+  const i = CHAIN_ORDER.indexOf(id);
   return i < 0 ? 99 : i;
 }
 
@@ -630,11 +648,11 @@ function fixtureMode(o) {
 
 // ------------------------------------------------------------------ live mode
 
-function originList(o, dep) {
+function originList(o, dep, reactiveId) {
   const ids = Object.keys(dep.chains).map(Number).sort((a, b) => order(a) - order(b));
   if (!o.origin) return [ids[0]];
   if (o.origin === "all") return ids;
-  const id = CHAIN_ALIAS[o.origin.toLowerCase()] ?? Number(o.origin);
+  const id = chainAlias(o.origin, reactiveId);
   if (!dep.chains[id]) throw new Error(`--origin ${o.origin}: chain ${id} isn't protected by this Tripwire (${ids.join(", ")})`);
   return [id];
 }
@@ -789,10 +807,10 @@ async function oneRun(o, ctx, i, originChain) {
   for (;;) {
     if (Date.now() > deadline) {
       const trip = tripId != null ? tripOf() : null;
-      log(`  timeout after ${o.timeoutMs / 1000} s (${tripId == null ? "no verdict on Lasna" : `${sweptChains.size}/${requests.length} sweeps`})`);
+      log(`  timeout after ${o.timeoutMs / 1000} s (${tripId == null ? "no verdict on Reactive Network" : `${sweptChains.size}/${requests.length} sweeps`})`);
       return fail("timeout", [meta.note, `timed out after ${o.timeoutMs / 1000} s`].filter(Boolean).join("; "), trip);
     }
-    // Lasna: the verdict for our log, then the trip and its sweep requests.
+    // Reactive Network: the verdict for our log, then the trip and its sweep requests.
     if (tripId == null) {
       const logs = await pollLogs(ctx, lasna, cursors[lasna], { address: dep.tripwire });
       monitor.ingest(logs);
@@ -870,8 +888,8 @@ async function setup(o) {
 function printPlan(o, ctx, dep, origins, problems) {
   const n = ctx.nets;
   log("Plan (dry run: nothing is sent)\n");
-  log(`  RPCs        ${[ctx.lasna, ...(dep ? Object.keys(dep.chains).map(Number) : [84532, 11155111, 1301])].map((id) => `${(n[id] || {}).short || id}=${(n[id] || {}).rpc || "MISSING"}`).join("  ")}`);
-  log(`  Tripwire    ${ctx.tripwire || "<not deployed: set --tripwire, $TRIPWIRE or demo/config.json \"tripwire\">"}`);
+  log(`  RPCs        ${[ctx.lasna, ...(dep ? Object.keys(dep.chains).map(Number) : Object.keys(ENV_RPC[netOf(ctx.lasna)]).map(Number).filter((id) => id !== ctx.lasna)).sort((a, b) => order(a) - order(b))].map((id) => `${(n[id] || {}).short || id}=${(n[id] || {}).rpc || "MISSING"}`).join("  ")}`);
+  log(`  Tripwire    ${ctx.tripwire || `<not deployed: set --tripwire, $TRIPWIRE or "tripwire" in ${shown(o.configPath)}>`}`);
   if (dep) {
     log(`  HOT ${dep.hot}  COLD ${dep.cold}  cosigner ${dep.cosigner}`);
     for (const [id, c] of Object.entries(dep.chains)) {
@@ -882,13 +900,13 @@ function printPlan(o, ctx, dep, origins, problems) {
   const cd = dep ? dep.cooldown : "<current>";
   log("");
   if (o.keepCooldown) log(`  0. leave tripCooldown at ${cd} s (--keep-cooldown)`);
-  else log(`  0. Lasna: setTripCooldown(0) as the owner (PRIVATE_KEY), was ${cd} s; restored to ${cd} at the end, on error or Ctrl-C`);
+  else log(`  0. ${chainName(n, ctx.lasna)}: setTripCooldown(0) as the owner (PRIVATE_KEY), was ${cd} s; restored to ${cd} at the end, on error or Ctrl-C`);
   log(`  for each of ${o.runs} run(s), origin ${origins.map((id) => chainName(n, id)).join(" → ")} in turn:`);
   if (o.mint !== "0") log(`    a. top HOT up to ${o.mint} whole tokens of every open-mint token on every chain (MODE=mint, PRIVATE_KEY)`);
   if (o.refill) log(`    a'. COLD sends its faucet-token balances back to HOT (MODE=refill, COLD_PK)`);
   const what = o.scenario === "panic" ? "cosigner presses panic (MODE=panic, COSIGNER_PK)" : `HOT ${o.scenario === "transfer" ? "sends" : "approves"} ${o.amount} ${o.token || "<first open-mint token>"} ${o.scenario === "transfer" ? "to" : "for"} ${o.to} (MODE=${o.scenario === "transfer" ? "move" : "approve"}, HOT_PK)`;
   log(`    b. trigger: ${what}`);
-  log(`    c. poll every ${o.pollMs} ms: Lasna for Observed/Tripped of that log, each Guardian for SweepDone(tripId); give up after ${o.timeoutMs / 1000} s`);
+  log(`    c. poll every ${o.pollMs} ms: ${chainName(n, ctx.lasna)} for Observed/Tripped of that log, each Guardian for SweepDone(tripId); give up after ${o.timeoutMs / 1000} s`);
   log(`    d. append rows to ${o.csvPath ? shown(o.csvPath) : "-"}; wait ${o.gapMs / 1000} s`);
   log(`  then: median/p90 table from the whole CSV → ${o.readmePath ? shown(o.readmePath) : "(no README)"} between the measure:latency markers`);
   log(`  forge broadcast records: ${shown(broadcastDir())}/Measure.s.sol/<chain>/`);
@@ -906,7 +924,7 @@ async function liveMode(o) {
     try {
       dep = await readDeployment(ctx.rpc, ctx.lasna, ctx.tripwire);
       await readTokens(ctx.rpc, dep);
-      origins = originList(o, dep);
+      origins = originList(o, dep, ctx.lasna);
       if (o.scenario !== "panic") for (const id of origins) pickToken(o, dep, id);
       if (lc(o.to) === lc(dep.cold)) problems.push("--to is COLD: that never trips");
       const trusted = C.toBig(await ctx.rpc(ctx.lasna, "eth_call", [{ to: dep.tripwire, data: C.encodeCall(C.SELECTOR.trusted, o.to) }, "latest"]));
@@ -937,7 +955,7 @@ async function liveMode(o) {
     }
   }
   if (o.dryRun) {
-    if (!origins.length) origins = o.origin && o.origin !== "all" ? [CHAIN_ALIAS[o.origin.toLowerCase()] ?? Number(o.origin)] : [84532];
+    if (!origins.length) origins = o.origin && o.origin !== "all" ? [chainAlias(o.origin, ctx.lasna)] : [chainAlias("base", ctx.lasna)];
     printPlan(o, ctx, dep, origins, problems);
     return 0;
   }
@@ -1062,7 +1080,7 @@ function onSignal() {
     state.abort = true;
     console.error("\ninterrupted: restoring tripCooldown and writing what was measured (Ctrl-C again to quit at once)");
   } else {
-    console.error("quitting without restoring: check tripCooldown() on Lasna and restore it with MODE=cooldown (see --help)");
+    console.error("quitting without restoring: check tripCooldown() on Reactive Network and restore it with MODE=cooldown (see --help)");
     process.exit(130);
   }
 }

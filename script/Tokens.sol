@@ -6,8 +6,8 @@ import {Chains} from "./Chains.sol";
 
 /// @notice The guarded token list for one chain, shared by Configure (on Reactive Network) and Arm (on the chain).
 /// Env: TOKENS (comma list, optional when USDC=true), THRESHOLDS (optional, same length as TOKENS, raw units),
-///      USDC (optional bool: also guard Circle's testnet USDC on that chain), USDC_THRESHOLD (optional, raw units:
-///      USDC has 6 decimals, so 5 USDC = 5000000; default 0).
+///      USDC (optional bool: also guard Circle's USDC on that chain, testnet or mainnet), USDC_THRESHOLD (optional,
+///      raw units: USDC has 6 decimals, so 5 USDC = 5000000; default 0).
 /// Thresholds are always raw token units, so a 6-decimal and an 18-decimal token need different numbers.
 library Tokens {
     Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));

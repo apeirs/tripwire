@@ -1,5 +1,7 @@
 {
   "REPO_URL": "https://github.com/OWNER/tripwire",
+  "NETWORKS": "Reactive mainnet  |  Base and Unichain",
+  "REACTIVE": "Reactive mainnet",
   "LAT_LAST_SWEEP": "0",
   "RUNS": "0",
   "LAT_P50": "0",

@@ -8,11 +8,12 @@ import {Chains, IDepositTo} from "./Chains.sol";
 
 /// @notice Destination chains, step 3. Deploys the Guardian for TRIPWIRE and credits callback reserves with
 ///         `depositTo()` on this chain's callback proxy.
-/// Env: PRIVATE_KEY, TRIPWIRE, HOT, COLD, FUND (wei of native gas, default 0.005 ether).
+/// Env: PRIVATE_KEY, TRIPWIRE, HOT, COLD, FUND (wei of native gas; default 0.005 ether on a testnet, 0.0001 ether
+///      on a mainnet: ≈ 40 trips on Base at 0.006 gwei, more on Unichain).
 contract DeployGuardian is Script {
     function run() external returns (Guardian g_) {
         address proxy = Chains.callbackProxy(block.chainid);
-        uint256 fund = vm.envOr("FUND", uint256(0.005 ether));
+        uint256 fund = vm.envOr("FUND", Chains.isMainnet(block.chainid) ? uint256(0.0001 ether) : uint256(0.005 ether));
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
         g_ = new Guardian(
             IPayable(payable(proxy)), vm.envAddress("TRIPWIRE"), vm.envAddress("HOT"), vm.envAddress("COLD")

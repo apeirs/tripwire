@@ -5,14 +5,19 @@ import {Script, console} from "forge-std/Script.sol";
 import {TripwireReactive} from "../src/TripwireReactive.sol";
 import {Chains} from "./Chains.sol";
 
-/// @notice Reactive Network (Lasna), step 2. Deploys TripwireReactive, funded through its payable constructor.
+/// @notice Reactive Network (Lasna or mainnet), step 2. Deploys TripwireReactive, funded through its payable
+///         constructor. CHAIN_IDS must be on the same side: testnets from Lasna, mainnets from Reactive mainnet.
 /// Env: PRIVATE_KEY (becomes owner), HOT, COLD, COSIGNER, CHAIN_IDS (comma list), INTENTS, PANICS (comma lists,
-///      same order; 0x0000000000000000000000000000000000000000 for none), FUND (wei of lREACT, default 2 ether).
-/// Run: forge script script/DeployReactive.s.sol --rpc-url https://lasna-rpc.rnk.dev/ --broadcast
+///      same order; 0x0000000000000000000000000000000000000000 for none), FUND (wei of (l)REACT, default 2 ether).
+/// Run: forge script script/DeployReactive.s.sol --rpc-url https://lasna-rpc.rnk.dev/ --broadcast   (Lasna)
+///      forge script script/DeployReactive.s.sol --rpc-url https://mainnet-rpc.rnk.dev/ --broadcast (mainnet)
 contract DeployReactive is Script {
     function run() external returns (TripwireReactive tw_) {
         require(Chains.isReactive(block.chainid), "run this on Reactive Network");
         uint256[] memory ids = vm.envUint("CHAIN_IDS", ",");
+        for (uint256 i; i < ids.length; ++i) {
+            Chains.requireSameNetwork(block.chainid, ids[i]);
+        }
         address[] memory intents = vm.envAddress("INTENTS", ",");
         address[] memory panics = vm.envAddress("PANICS", ",");
         uint256 fund = vm.envOr("FUND", uint256(2 ether));

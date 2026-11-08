@@ -17,9 +17,10 @@ interface IFiatToken {
     function decimals() external view returns (uint8);
 }
 
-/// @notice Sweeps Circle's real testnet USDC bytecode (FiatToken proxy + implementation) on a fork of each chain.
+/// @notice Sweeps Circle's real USDC bytecode (FiatToken proxy + implementation) on a fork of each chain.
 ///         Read-only against the RPC: nothing is sent to any network. Off by default; run with
-///         FORK_TESTS=1 BASE_RPC=... ETH_RPC=... UNI_RPC=... forge test --mc UsdcForkTest -vv
+///         FORK_TESTS=1 BASE_RPC=... ETH_RPC=... UNI_RPC=... forge test --mc UsdcForkTest -vv (testnets; the mainnet
+///         variants read BASE_MAINNET_RPC / UNI_MAINNET_RPC)
 contract UsdcForkTest is Test {
     uint256 internal constant AMOUNT = 20e6;
 
@@ -68,5 +69,14 @@ contract UsdcForkTest is Test {
 
     function test_fork_unichainSepoliaUsdc() public {
         _run("UNI_RPC", Chains.UNICHAIN_SEPOLIA);
+    }
+
+    // Mainnet USDC (same FiatToken v2). FORK_TESTS=1 BASE_MAINNET_RPC=.. UNI_MAINNET_RPC=.. forge test --mc UsdcFork
+    function test_fork_baseMainnetUsdc() public {
+        _run("BASE_MAINNET_RPC", Chains.BASE);
+    }
+
+    function test_fork_unichainMainnetUsdc() public {
+        _run("UNI_MAINNET_RPC", Chains.UNICHAIN);
     }
 }

@@ -401,8 +401,14 @@
         } else if (ev.name === "SweepRequested") {
           tripOf(ev.tripId).requests.push({ chainId: ev.destChainId, guardian: ev.guardian, tokens: ev.tokens });
         } else if (["Swept", "Skipped", "SweepDone", "Replayed"].includes(ev.name)) {
-          const chainId = ctx.guardianChain[ev.address] ?? ev.chainId;
-          if (ctx.guardianChain[ev.address] == null && Object.keys(ctx.guardianChain).length) continue; // not our Guardian
+          // The chain a log came from decides, not the Guardian's address: one deployer with the same nonces on two
+          // chains gets the same Guardian address on both, and an address -> chain map would fold their sweeps
+          // into one chain. guardianChain is only the fallback for a log without a chainId.
+          const chainId = ev.chainId ?? ctx.guardianChain[ev.address];
+          if (Object.keys(ctx.guardianChain).length) {
+            const ours = ev.chainId != null ? (ctx.chains[ev.chainId] || {}).guardian === ev.address : ctx.guardianChain[ev.address] != null;
+            if (!ours) continue; // not our Guardian on that chain
+          }
           const s = (tripOf(ev.tripId).sweeps[chainId] ??= { chainId, txHash: ev.txHash, blockNumber: ev.blockNumber, ts: ev.ts, tsExact: ev.tsExact, swept: [], skipped: [], done: null, replayed: false });
           if (s.ts == null) s.ts = ev.ts;
           if (ev.name === "Swept") s.swept.push({ token: ev.token, amount: ev.amount });

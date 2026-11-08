@@ -16,9 +16,23 @@ library Chains {
     address internal constant SYSTEM = 0x8888888888888888888888888888888888888888;
 
     error UnsupportedChain(uint256 chainId);
+    error MixedNetworks(uint256 reactiveChainId, uint256 chainId);
 
     function isReactive(uint256 chainId_) internal pure returns (bool) {
         return chainId_ == LASNA || chainId_ == REACTIVE_MAINNET;
+    }
+
+    /// @notice Reactive mainnet and the mainnets it serves (real money). Everything else is a testnet or a local chain.
+    function isMainnet(uint256 chainId_) internal pure returns (bool) {
+        return chainId_ == REACTIVE_MAINNET || chainId_ == BASE || chainId_ == ETHEREUM || chainId_ == UNICHAIN;
+    }
+
+    /// @notice "Mainnets and testnets must not be mixed" (dev.reactive.network/origins-and-destinations): a Lasna
+    ///         contract only sees testnets, a Reactive mainnet contract only mainnets. Also rejects a chain with no
+    ///         callback proxy.
+    function requireSameNetwork(uint256 reactiveChainId_, uint256 chainId_) internal pure {
+        if (isMainnet(reactiveChainId_) != isMainnet(chainId_)) revert MixedNetworks(reactiveChainId_, chainId_);
+        callbackProxy(chainId_);
     }
 
     /// @notice Callback proxy on a destination chain.
@@ -32,13 +46,16 @@ library Chains {
         revert UnsupportedChain(chainId_);
     }
 
-    /// @notice Circle's testnet USDC (FiatToken v2, 6 decimals) on a protected chain, or address(0) where there is
-    ///         none. Addresses from developers.circle.com/stablecoins/usdc-contract-addresses ("Testnet"), read and
-    ///         checked on-chain (symbol USDC, 6 decimals) 2026-11-08. Free test USDC: faucet.circle.com.
+    /// @notice Circle's USDC (FiatToken v2, 6 decimals) on a protected chain, or address(0) where there is none.
+    ///         Addresses from developers.circle.com/stablecoins/usdc-contract-addresses, read and checked on-chain
+    ///         (symbol USDC, 6 decimals) 2026-11-08. Free test USDC on the testnets: faucet.circle.com.
     function usdc(uint256 chainId_) internal pure returns (address) {
         if (chainId_ == BASE_SEPOLIA) return 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
         if (chainId_ == ETH_SEPOLIA) return 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
         if (chainId_ == UNICHAIN_SEPOLIA) return 0x31d0220469e10c4E71834a79b1f276d740d3768F;
+        if (chainId_ == BASE) return 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+        if (chainId_ == ETHEREUM) return 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+        if (chainId_ == UNICHAIN) return 0x078D782b760474a361dDA0AF3839290b0EF57AD6;
         return address(0);
     }
 }

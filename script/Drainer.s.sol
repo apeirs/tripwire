@@ -10,7 +10,8 @@ interface IToken {
     function balanceOf(address who) external view returns (uint256);
 }
 
-/// @notice Simulated attacks for the testnet demo (test tokens only).
+/// @notice Simulated attacks for the demo, on demo tokens only (tUSD/tETH/tDAI on testnets, the worthless TDTA/B/C
+///         on mainnets; see DeployMocks).
 /// MODE=deploy  attacker deploys a Drainer.                       Env: ATTACKER_PK
 /// MODE=phish   the victim signs approvals to the Drainer.        Env: HOT_PK, DRAINER, TOKENS
 /// MODE=pull    the drainer pulls one token per transaction.      Env: ATTACKER_PK, DRAINER, HOT, TOKENS

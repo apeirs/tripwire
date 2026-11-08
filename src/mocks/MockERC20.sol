@@ -3,7 +3,8 @@ pragma solidity ^0.8.29;
 
 /// @title MockERC20
 /// @author apeir
-/// @notice Plain test token for the testnet demo: open mint, max allowance is never spent down.
+/// @notice Plain demo token: open mint, max allowance is never spent down. Worthless by design; on a mainnet
+///         DeployMocks names it "Tripwire Demo Token A/B/C (worthless)".
 contract MockERC20 {
     string public name;
     string public symbol;
