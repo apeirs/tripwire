@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tripwire Arm</title>
+<link rel="icon" href="data:,">
+<meta name="description" content="Arm, check and manage a Tripwire drain guard from your own wallet: Guardians, approvals, pre-cleared payments, panic and disarm.">
+<style>
+  :root {
+    --bg: #0c1016; --panel: #141a22; --panel2: #1a222c; --border: #273140; --text: #e6edf3; --muted: #8a97a6;
+    --ok: #3fb96f; --bad: #ff5d5d; --warn: #e3a92b; --info: #5ea8ff; --trip-bg: #2a1518;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f6f7f9; --panel: #fff; --panel2: #f0f2f5; --border: #d9dee5; --text: #18202a; --muted: #5d6a78;
+      --ok: #1a7f45; --bad: #c62828; --warn: #9a6700; --info: #0b62d6; --trip-bg: #fdeceb; color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f9; --panel: #fff; --panel2: #f0f2f5; --border: #d9dee5; --text: #18202a; --muted: #5d6a78;
+    --ok: #1a7f45; --bad: #c62828; --warn: #9a6700; --info: #0b62d6; --trip-bg: #fdeceb; color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html, body { overflow-x: clip; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--info); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .mono, .addr { font-family: var(--mono); font-size: 13px; }
+  .addr { overflow-wrap: anywhere; }
+  #header { display: flex; justify-content: space-between; align-items: center; gap: 10px 14px; flex-wrap: wrap;
+    padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 3; }
+  .brand { font-size: 20px; font-weight: 700; letter-spacing: .2px; white-space: nowrap; }
+  .brand .logo { color: var(--bad); }
+  .brand .sub { font-size: 14px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .hdr-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; min-width: 0; }
+  main { max-width: 1120px; margin: 0 auto; padding: 16px 24px 64px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; min-width: 0; }
+  .panel h2 { font-size: 16px; margin: 0 0 10px; display: flex; gap: 8px 10px; align-items: center; flex-wrap: wrap; }
+  .panel h3 { font-size: 14px; margin: 14px 0 6px; }
+  .panel p { margin: 6px 0; }
+  .muted { color: var(--muted); } .small { font-size: 12.5px; }
+  .ok-t { color: var(--ok); } .bad-t { color: var(--bad); } .warn-t { color: var(--warn); }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: .3px; white-space: nowrap; }
+  .p-ok { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+  .p-bad { background: color-mix(in srgb, var(--bad) 22%, transparent); color: var(--bad); }
+  .p-warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+  .p-info { background: color-mix(in srgb, var(--info) 18%, transparent); color: var(--info); }
+  .p-muted { background: var(--panel2); color: var(--muted); }
+  .chip { display: inline-block; padding: 0 7px; border-radius: 5px; font-size: 12px; font-weight: 600; white-space: nowrap;
+    color: var(--c); border: 1px solid color-mix(in srgb, var(--c) 55%, transparent); background: color-mix(in srgb, var(--c) 12%, transparent); }
+  button, .btn { font: inherit; font-size: 14px; background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+  button:hover:not(:disabled) { border-color: var(--info); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--info); border-color: var(--info); color: #fff; font-weight: 600; }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
+  button.ghost { background: transparent; }
+  button.big { font-size: 16px; padding: 10px 18px; }
+  input, select { font: inherit; font-size: 14px; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 9px; min-width: 0; max-width: 100%; }
+  input.addr-in { font-family: var(--mono); font-size: 13px; }
+  label.fld { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+  label.fld > input, label.fld > select { color: var(--text); }
+  label.chk { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 14px; }
+  .row { display: flex; gap: 8px 10px; align-items: center; flex-wrap: wrap; }
+  .row.end { justify-content: flex-end; }
+  .spacer { flex: 1 1 auto; }
+  .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 6px 18px; margin: 6px 0 10px; }
+  .kv .k { color: var(--muted); font-size: 12px; display: block; }
+  .chains { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; }
+  .card { background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; min-width: 0; }
+  .card.armed { border-color: color-mix(in srgb, var(--ok) 50%, var(--border)); }
+  .card.unarmed { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+  .card header { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .tok { display: grid; grid-template-columns: minmax(70px, auto) 1fr auto; gap: 2px 10px; align-items: center;
+    padding: 7px 0; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+  .tok .sym { font-weight: 600; }
+  .tok .nums { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 0; }
+  .tok .nums b { color: var(--text); font-weight: 500; }
+  .steps { list-style: none; margin: 8px 0 0; padding: 0; }
+  .steps li { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; padding: 7px 0; border-top: 1px dashed var(--border); }
+  .steps .tick { width: 18px; flex: 0 0 18px; text-align: center; font-weight: 700; }
+  .steps .what { flex: 1 1 200px; min-width: 0; }
+  .who { font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); margin-left: 4px; }
+  .who.you { color: var(--ok); }
+  .callout { border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 9%, transparent); padding: 8px 12px; border-radius: 0 7px 7px 0; margin: 8px 0; font-size: 14px; }
+  .callout.bad { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 9%, transparent); }
+  .callout.ok { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 9%, transparent); }
+  .callout.info { border-color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tabs button[aria-selected="true"] { border-color: var(--info); background: color-mix(in srgb, var(--info) 16%, transparent); }
+  .panic-box { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .trip { border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--border)); background: var(--trip-bg); border-radius: 9px; padding: 9px 12px; margin-bottom: 8px; }
+  .trip.done { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); background: var(--panel2); }
+  .trip .row { font-size: 14px; }
+  .list { list-style: none; margin: 0; padding: 0; }
+  .list li { padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); font-size: 14px; overflow-wrap: anywhere; }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  /* transaction dialog */
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: flex-start; justify-content: center;
+    padding: 6vh 16px 16px; z-index: 10; overflow-y: auto; }
+  #modal.open { display: flex; }
+  .dlg { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; width: 100%; max-width: 640px; padding: 16px 18px; min-width: 0; }
+  .dlg h3 { margin: 0 0 6px; font-size: 18px; }
+  .tx { border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; margin: 10px 0; background: var(--panel2); }
+  .tx .hd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-weight: 600; }
+  .tx ul { margin: 6px 0 4px; padding-left: 18px; }
+  .tx li { margin: 2px 0; }
+  .tx .call { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .tx .st { font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
+  .tx.cur { border-color: var(--info); }
+  .tx.okd { border-color: color-mix(in srgb, var(--ok) 60%, var(--border)); }
+  .tx.err { border-color: var(--bad); }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 9px; padding: 8px 14px; font-size: 14px; z-index: 11; display: none; max-width: calc(100vw - 32px); }
+  @media (max-width: 720px) {
+    #header { padding: 10px 16px; }
+    main { padding: 12px 16px 48px; gap: 12px; }
+    .panel { padding: 12px 14px; }
+    .chains { grid-template-columns: minmax(0, 1fr); }
+    .brand .sub { display: block; margin-left: 0; }
+    .tok { grid-template-columns: minmax(60px, auto) 1fr; }
+    .tok > :last-child { grid-column: 1 / -1; justify-self: start; }
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    #modal { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+<div id="header"></div>
+<main id="main"><section class="panel muted">Loading…</section></main>
+<div id="modal" role="dialog" aria-modal="true" aria-labelledby="dlg-title"></div>
+<div id="toast" role="status"></div>
+<noscript><p style="padding:16px">This page needs JavaScript: it reads the chains from public RPCs and talks to your wallet.</p></noscript>
+<script type="module" src="arm.js"></script>
+</body>
+</html>
