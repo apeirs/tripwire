@@ -1,11 +1,16 @@
 {
   "_help": "Reactive MAINNET deployment (Base + Unichain; Ethereum is supported but not deployed). Open the page with ?net=mainnet (or ?config=config.mainnet.json). `lasnaChainId` is the Reactive chain id (1597 here). RPCs: base-rpc.publicnode.com because mainnet.base.org refuses eth_getLogs; Unichain's public RPC caps log ranges at 1000 blocks. All four send CORS headers (checked 2026-11-08).",
   "lasnaChainId": 1597,
-  "tripwire": "",
+  "tripwire": "0x1898A6001b4EBBE27d139195F136Dd185DCC819a",
   "lookbackMinutes": 10,
   "pollMs": 4000,
   "balanceEveryMs": 8000,
-  "labels": {},
+  "labels": {
+    "0x547Ce432D1165D5823A555bE653047fF3d75D505": "Drainer",
+    "0x000000000000000000000000000000000000dEaD": "Shop",
+    "0x89844BD82708dc7ADfD24d9178c635130D032d1f": "Attacker",
+    "0x1947554f075E02A85B7C5Ac0C738982bfEa14501": "Cosigner"
+  },
   "fallback": {
     "hot": "",
     "cold": "",
