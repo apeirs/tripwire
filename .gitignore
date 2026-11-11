@@ -6,3 +6,6 @@ broadcast/
 
 # local demo config written by tools/localnet/run.sh HOLD=1
 demo/*.local.json
+
+# filled-in caption values for a final video build (copy of tools/video/values.example.json)
+tools/video/values.json

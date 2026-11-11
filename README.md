@@ -2,15 +2,41 @@
 
 **One stolen key shouldn't cost you every chain.**
 
-Tripwire guards a hot wallet's ERC-20s on Base, Unichain and Ethereum. It runs on **Reactive mainnet**, guarding
-Base and Unichain (demo tokens; Circle's real USDC works the same and is fork-tested); the same scripts deploy on the
-Lasna testnet with the three Sepolias. When an outgoing transfer
-or approval leaves the wallet that isn't to a trusted address, isn't under your threshold and wasn't pre-cleared,
-a reactive contract on Reactive Network trips and asks a Guardian on **every guarded chain** to move every
-approved token to your cold address. A Guardian can pay exactly one address, yours, and only on a callback from
-your own reactive contract.
+Tripwire is a cross-chain drain guard on Reactive Network. When a hot wallet sends or approves a token to an address
+that isn't trusted, isn't under your threshold and wasn't pre-cleared, a reactive contract trips, and a Guardian on
+**every guarded chain** moves every approved token to your cold address, about 2 seconds after the move. A Guardian
+can pay exactly one address, yours, and only on a callback from your own reactive contract. There is no bot, server or
+keeper key to run.
 
-Built for the Reactive Omni Buildathon, track *Set It and Forget It*.
+Reactive Omni Buildathon, track *Set It and Forget It*.
+
+| | |
+|---|---|
+| **Live on Reactive mainnet** | Since 2026-11-08 09:06 UTC ([deploy tx](https://reactscan.net/tx/0x84fe6bacbf3a867eba99212c0725924f4a7bdd3614dd02cdc744b7b7d3952b31)), guarding **Base and Unichain**. First full loop 09:10 UTC. Still armed on 2026-11-11: HOT's approvals in place on both chains, reserves funded, no callback debt. |
+| **Contracts** | TripwireReactive [`0x1898…819a`](https://reactscan.net/address/0x1898A6001b4EBBE27d139195F136Dd185DCC819a) (Reactive 1597) · Guardian [`0x5adA…2F7e`](https://basescan.org/address/0x5adA1ee3C19C074BF10d560d0F1b9A94Dcf02F7e) (Base) · Guardian [`0x472E…D9E1`](https://uniscan.xyz/address/0x472EAcb4C6710e1dDa165D30a6d3BA745207D9E1) (Unichain) · [all addresses](#deployed-reactive-mainnet--base--unichain) |
+| **On-chain record** | 16 trips, each swept on both chains (32 sweep callbacks); 5 scenarios with every tx hash in [Loops on-chain](#loops-on-chain): phishing approval, key sweeper, panic, pre-cleared payment, merged repeat |
+| **Measured latency** | 12 live mainnet runs: origin block → last sweep block **≈2 s** (median and max, block timestamps). Wall clock, origin receipt → last sweep seen: median 0.8 s from Base, 1.7 s from Unichain. [Table](#latency-origin-block--sweep-included), [every run's tx hashes](docs/latency.csv) |
+| **Demo video** | [2:08, recorded live on mainnet (trip #16)](https://github.com/apeirs/tripwire/releases/download/v1.0/tripwire-demo.mp4) |
+| **Live monitor** | [apeir.dk/online/tripwire](https://apeir.dk/online/tripwire/): every trip so far, sweeps, balances and reserves, read in your browser from public RPCs ([source](demo/)) |
+| **Tests** | `forge test`: 69 pass (51 unit and scenario, 12 fuzz at 512 runs, 6 invariants). 5 more fork tests sweep Circle's real USDC on forks of Base, Unichain and three Sepolias (all 5 pass; [how](#safety-properties-and-the-tests-that-hold-them)) |
+| **Built** | First commit 2026-11-07 23:50 UTC, during the buildathon; public since 2026-11-08 |
+
+**Check it yourself in a minute** (read-only, no key, nothing sent):
+
+```bash
+R=https://mainnet-rpc.rnk.dev/ T=0x1898A6001b4EBBE27d139195F136Dd185DCC819a
+cast call $T "trips()(uint256)" --rpc-url $R                                  # trips so far (16 on 2026-11-11)
+cast call $T "HOT()(address)" --rpc-url $R; cast call $T "COLD()(address)" --rpc-url $R
+cast call 0x5adA1ee3C19C074BF10d560d0F1b9A94Dcf02F7e "handled(uint256)(bool)" 16 \
+  --rpc-url https://base-rpc.publicnode.com                                   # trip #16 swept on Base: true
+cast call 0x472EAcb4C6710e1dDa165D30a6d3BA745207D9E1 "handled(uint256)(bool)" 16 \
+  --rpc-url https://unichain-rpc.publicnode.com                               # and on Unichain: true
+```
+
+The demo guards three worthless test tokens (TDTA/TDTB/TDTC, open mint), so latency runs can re-mint them and no
+real value sits behind a demo key. Circle's USDC takes the same code path (fork tests above). The same scripts deploy
+on the Lasna testnet with the Sepolias, and Ethereum mainnet is supported but not deployed.
+
 
 ## The problem
 
@@ -141,7 +167,7 @@ subscriptions, delivered to `react()` as the system contract, and the requested 
 mock proxy that injects the sender and holds back gas the way the real one does. `test/Loop.t.sol` runs the four demo
 scenarios end to end; `test/DemoTrace.t.sol` runs the demo story and prints its raw logs for the demo page.
 
-## Gas and cost (measured in tests; live numbers go in the tables below)
+## Gas and cost (measured in tests; live timings are under [Latency](#latency-origin-block--sweep-included))
 
 | Step | Gas | Cost |
 |---|---|---|
@@ -371,6 +397,9 @@ cd demo && python3 -m http.server 8000
 
 ## Recording the video
 
+The submitted video, [`tripwire-demo.mp4` on the v1.0 release](https://github.com/apeirs/tripwire/releases/download/v1.0/tripwire-demo.mp4)
+(2:08), is a `--live --mainnet` build: trip #16 on the deployment below, recorded 2026-11-08 09:37 UTC.
+
 `tools/video/` turns the monitor page into the submission video (`demo/STORYBOARD.md` has the shot list). It records
 the page headless at 1920x1080 (Playwright + Chromium), then ffmpeg adds a title card, captions from
 `tools/video/captions.json` and an end card, and writes `tools/video/out/tripwire-demo.mp4` (H.264, yuv420p, 1920x1080,
@@ -404,6 +433,9 @@ if you want them. Useful pieces on their own: `node tools/video/record.mjs [--li
 
 ## Deployed (Reactive mainnet + Base + Unichain)
 
+Deployed 2026-11-08: TripwireReactive in Reactive block 8549849, 09:06:38 UTC
+([`0x84fe6bac…`](https://reactscan.net/tx/0x84fe6bacbf3a867eba99212c0725924f4a7bdd3614dd02cdc744b7b7d3952b31)).
+
 | Contract | Chain | Address |
 |---|---|---|
 | TripwireReactive | Reactive mainnet 1597 | [`0x1898A6001b4EBBE27d139195F136Dd185DCC819a`](https://reactscan.net/address/0x1898A6001b4EBBE27d139195F136Dd185DCC819a) |
@@ -415,6 +447,10 @@ if you want them. Useful pieces on their own: `node tools/video/record.mjs [--li
 | Drainer (demo attacker) | Base | [`0x547Ce432D1165D5823A555bE653047fF3d75D505`](https://basescan.org/address/0x547Ce432D1165D5823A555bE653047fF3d75D505) |
 
 ## Loops on-chain
+
+Five scenarios, one per row. With the 12 latency runs and the video's take, the contract has tripped 16 times
+(`trips()`), and each trip was swept on both chains (`Guardian.handled(tripId)` is true for 1 to 16 on Base and on
+Unichain).
 
 | # | Scenario | Origin tx | Reactive tx | Callback txs (Base / Unichain) |
 |---|---|---|---|---|
