@@ -15,11 +15,11 @@ keeper key to run.
 
 Reactive Omni Buildathon, track *Set It and Forget It*.
 
-[![The live monitor reading the mainnet deployment: what is guarded, every token 100% in the vault, and trip #16, a phishing approval on Base swept on Base and Unichain 1.6 s after the origin block](docs/monitor.png)](https://apeirs.github.io/tripwire/)
+[![Trip #16 on the live monitor: HOT approves a drainer for unlimited TDTB on Base, TripwireReactive trips on Reactive mainnet, and the Guardians sweep every token to the vault on Base (+1.2 s) and Unichain (+1.6 s)](docs/trip.png)](https://apeirs.github.io/tripwire/)
 
-*The [live monitor](https://apeirs.github.io/tripwire/), reading the mainnet contracts from public RPCs in your browser:
-trip #16, an unlimited approval to a drainer on Base, swept to the vault on Base and Unichain within 1.6 s of the
-origin block. Every hash on the page links to its explorer.*
+*Trip #16 on the [live monitor](https://apeirs.github.io/tripwire/), which reads the mainnet contracts from public RPCs
+in your browser: an unlimited approval to a drainer on Base, and every token swept to the vault on Base and Unichain
+within 1.6 s of the origin block. Every hash on the page links to its explorer.*
 
 **What it does that a simple tripwire doesn't:** normal spending doesn't trip it (per-token thresholds, trusted
 addresses, and one-off payments pre-cleared from a second key); revoking the Guardian's approval trips it; a burst
@@ -348,6 +348,8 @@ the loop as it happens: the watched move on the origin chain, the `Tripped` reac
 sweep, with explorer links, block timestamps and the latency between steps. Verdicts link to their moves by origin
 tx and log index, and moves merged into a trip are listed on its card. It also shows hot vs vault balances,
 whether each Guardian is still approved, the reactive contract's REACT balance and each Guardian's callback debt.
+
+[![The live monitor on mainnet: what is guarded, each Guardian's callback debt, hot vs vault balances (100% in the vault, allowances armed), and the newest trip](docs/monitor.png)](https://apeirs.github.io/tripwire/)
 
 **Hosted, reading the live mainnet deployment: <https://apeirs.github.io/tripwire/>**, published from this repo by
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) on every push that touches `demo/` (the same files, with
