@@ -1,5 +1,10 @@
 # Tripwire
 
+[![test](https://github.com/apeirs/tripwire/actions/workflows/test.yml/badge.svg)](https://github.com/apeirs/tripwire/actions/workflows/test.yml)
+[![live monitor](https://img.shields.io/badge/live%20monitor-Reactive%20mainnet-2bd4a4)](https://apeirs.github.io/tripwire/)
+[![Sourcify](https://img.shields.io/badge/Sourcify-13%2F13%20exact%20match-2bd4a4)](#deployed-reactive-mainnet--base--unichain)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **One stolen key shouldn't cost you every chain.**
 
 Tripwire is a cross-chain drain guard on Reactive Network. When a hot wallet sends or approves a token to an address
@@ -10,23 +15,35 @@ keeper key to run.
 
 Reactive Omni Buildathon, track *Set It and Forget It*.
 
+[![The live monitor reading the mainnet deployment: what is guarded, every token 100% in the vault, and trip #16, a phishing approval on Base swept on Base and Unichain 1.6 s after the origin block](docs/monitor.png)](https://apeirs.github.io/tripwire/)
+
+*The [live monitor](https://apeirs.github.io/tripwire/), reading the mainnet contracts from public RPCs in your browser:
+trip #16, an unlimited approval to a drainer on Base, swept to the vault on Base and Unichain within 1.6 s of the
+origin block. Every hash on the page links to its explorer.*
+
+**What it does that a simple tripwire doesn't:** normal spending doesn't trip it (per-token thresholds, trusted
+addresses, and one-off payments pre-cleared from a second key); revoking the Guardian's approval trips it; a burst
+of drainer moves merges into one sweep per chain, and the guard re-arms by itself after the merge window instead of
+staying off until someone rearms it; a panic button works from the cosigner on any chain. It has run on Reactive
+mainnet since 2026-11-08 with every trip on record ([threat model](#threat-model-and-honest-limits)).
+
 | | |
 |---|---|
-| **Live on Reactive mainnet** | Since 2026-11-08 09:06 UTC ([deploy tx](https://reactscan.net/tx/0x84fe6bacbf3a867eba99212c0725924f4a7bdd3614dd02cdc744b7b7d3952b31)), guarding **Base and Unichain**. First full loop 09:10 UTC. Still armed on 2026-11-11: HOT's approvals in place on both chains, reserves funded, no callback debt. |
+| **Live on Reactive mainnet** | Since 2026-11-08 09:06 UTC ([deploy tx](https://reactscan.net/tx/0x84fe6bacbf3a867eba99212c0725924f4a7bdd3614dd02cdc744b7b7d3952b31)), guarding **Base and Unichain**. First full loop 09:10 UTC. Still armed on 2026-11-12: HOT's approvals in place on both chains, reserves funded, no callback debt. |
 | **Contracts** | TripwireReactive [`0x1898…819a`](https://reactscan.net/address/0x1898A6001b4EBBE27d139195F136Dd185DCC819a) (Reactive 1597) · Guardian [`0x5adA…2F7e`](https://basescan.org/address/0x5adA1ee3C19C074BF10d560d0F1b9A94Dcf02F7e) (Base) · Guardian [`0x472E…D9E1`](https://uniscan.xyz/address/0x472EAcb4C6710e1dDa165D30a6d3BA745207D9E1) (Unichain) · [all addresses](#deployed-reactive-mainnet--base--unichain) |
 | **Source-verified** | All 13 deployed contracts are an exact match on Sourcify (verified 2026-11-11): TripwireReactive [Reactive](https://repo.sourcify.dev/1597/0x1898A6001b4EBBE27d139195F136Dd185DCC819a) · Guardian [Base](https://repo.sourcify.dev/8453/0x5adA1ee3C19C074BF10d560d0F1b9A94Dcf02F7e) / [Unichain](https://repo.sourcify.dev/130/0x472EAcb4C6710e1dDa165D30a6d3BA745207D9E1) · Intent [Base](https://repo.sourcify.dev/8453/0xBb31114B025C84D2348Eb50E9e748f368060eBE4) / [Unichain](https://repo.sourcify.dev/130/0xBb31114B025C84D2348Eb50E9e748f368060eBE4) · PanicButton [Base](https://repo.sourcify.dev/8453/0x75f8b4fb7b11d8F496f6136354A56EAC540E1908) / [Unichain](https://repo.sourcify.dev/130/0x75f8b4fb7b11d8F496f6136354A56EAC540E1908) · demo tokens on both chains |
 | **On-chain record** | 16 trips, each swept on both chains (32 sweep callbacks); 5 scenarios with every tx hash in [Loops on-chain](#loops-on-chain): phishing approval, key sweeper, panic, pre-cleared payment, merged repeat |
 | **Measured latency** | 12 live mainnet runs: origin block → last sweep block **≈2 s** (median and max, block timestamps). Wall clock, origin receipt → last sweep seen: median 0.8 s from Base, 1.7 s from Unichain. [Table](#latency-origin-block--sweep-included), [every run's tx hashes](docs/latency.csv) |
 | **Demo video** | [2:08, recorded live on mainnet (trip #16)](https://github.com/apeirs/tripwire/releases/download/v1.0/tripwire-demo.mp4) |
-| **Live monitor** | [apeir.dk/online/tripwire](https://apeir.dk/online/tripwire/): every trip so far, sweeps, balances and reserves, read in your browser from public RPCs ([source](demo/)) |
-| **Tests** | `forge test`: 69 pass (51 unit and scenario, 12 fuzz at 512 runs, 6 invariants). 5 more fork tests sweep Circle's real USDC on forks of Base, Unichain and three Sepolias (all 5 pass; [how](#safety-properties-and-the-tests-that-hold-them)) |
+| **Live monitor** | [apeirs.github.io/tripwire](https://apeirs.github.io/tripwire/) (mirror: [apeir.dk/online/tripwire](https://apeir.dk/online/tripwire/)): every trip so far, sweeps, balances and reserves, read in your browser from public RPCs ([source](demo/), deployed by [`pages.yml`](.github/workflows/pages.yml)); [`?mock=1`](https://apeirs.github.io/tripwire/?mock=1) replays a recorded trip |
+| **Tests** | [CI on every push](https://github.com/apeirs/tripwire/actions/workflows/test.yml) (`forge fmt --check`, build, tests, 176 offline checks of the monitor's decoders). `forge test`: 69 pass (51 unit and scenario, 12 fuzz at 512 runs, 6 invariants). 5 more fork tests sweep Circle's real USDC on forks of Base, Unichain and three Sepolias (all 5 pass; [how](#safety-properties-and-the-tests-that-hold-them)) |
 | **Built** | First commit 2026-11-07 23:50 UTC, during the buildathon; public since 2026-11-08 |
 
 **Check it yourself in a minute** (read-only, no key, nothing sent):
 
 ```bash
 R=https://mainnet-rpc.rnk.dev/ T=0x1898A6001b4EBBE27d139195F136Dd185DCC819a
-cast call $T "trips()(uint256)" --rpc-url $R                                  # trips so far (16 on 2026-11-11)
+cast call $T "trips()(uint256)" --rpc-url $R                                  # trips so far (16 on 2026-11-12)
 cast call $T "HOT()(address)" --rpc-url $R; cast call $T "COLD()(address)" --rpc-url $R
 cast call 0x5adA1ee3C19C074BF10d560d0F1b9A94Dcf02F7e "handled(uint256)(bool)" 16 \
   --rpc-url https://base-rpc.publicnode.com                                   # trip #16 swept on Base: true
@@ -332,8 +349,10 @@ sweep, with explorer links, block timestamps and the latency between steps. Verd
 tx and log index, and moves merged into a trip are listed on its card. It also shows hot vs vault balances,
 whether each Guardian is still approved, the reactive contract's REACT balance and each Guardian's callback debt.
 
-**Hosted, reading the live mainnet deployment: <https://apeir.dk/online/tripwire/>** (the same files, with
-`config.mainnet.json` as its `config.json`).
+**Hosted, reading the live mainnet deployment: <https://apeirs.github.io/tripwire/>**, published from this repo by
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml) on every push that touches `demo/` (the same files, with
+`config.mainnet.json` as its `config.json`; mirror at <https://apeir.dk/online/tripwire/>). The arm page signs real
+transactions, so it isn't hosted; run it locally as below.
 
 On load the page also reads the deployment's history: TripwireReactive's own logs on Reactive since its deploy block
 (`fromBlock` in the config; when that would take more than 40 `eth_getLogs` calls it bisects the `trips()` counter
