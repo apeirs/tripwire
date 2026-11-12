@@ -1,0 +1,42 @@
+name: pages
+
+# Publishes the live monitor (demo/) to GitHub Pages, pointed at the Reactive mainnet deployment:
+# config.mainnet.json is served as config.json, so the bare URL reads mainnet; ?mock=1 (recorded replay) still works.
+# The arm page (demo/arm/) signs real transactions from a wallet, so it stays a local page (README: Arming it).
+# The page only reads public RPCs from the visitor's browser; nothing here holds a key.
+on:
+  push:
+    branches: [main]
+    paths: ["demo/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Assemble the site
+        run: |
+          mkdir -p _site
+          cp demo/index.html demo/app.js demo/core.js demo/fixture.json demo/config.mainnet.json _site/
+          cp demo/config.mainnet.json _site/config.json
+          touch _site/.nojekyll
+          ls -R _site
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v5

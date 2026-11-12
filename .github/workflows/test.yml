@@ -1,0 +1,39 @@
+name: test
+
+# Contracts: format, build, unit + fuzz + invariant tests (fork tests skip themselves without FORK_TESTS and RPCs).
+# Demo page: offline checks of event signatures, decoders, the replay fixture and the log poller (demo/tools/check.mjs).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  forge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1
+      - run: forge fmt --check
+      - run: forge build --sizes
+      - run: forge test -vv
+
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: node demo/tools/check.mjs
